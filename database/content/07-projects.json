@@ -1,0 +1,237 @@
+[
+  {
+    "module": 10,
+    "title": "Project A: a testable payment processing system",
+    "definition": "Build a simulated checkout around a payment contract, value objects, explicit failures, and repeatable tests before connecting any real provider.",
+    "why": "The application service should depend on a PaymentGateway interface and coordinate a coherent use case. Each provider adapter honors amount units, success semantics, and failure behavior. Use an abstract base only if providers truly share stable behavior; do not combine interfaces, abstract classes, and factories merely to collect pattern names.\n\nApply all five SOLID principles together: isolate validation/calculation/provider adaptation (SRP), add providers through the contract (OCP), share behavioral contract tests (LSP), keep charge and refund capabilities separate if needed (ISP), and depend on policy-owned contracts (DIP).\n\nA real charge requires idempotency, durable order state, webhook signature validation, and failure reconciliation. The simulation deliberately does not claim these external integrations are complete. Start with a fake that records calls, then test the orchestration without credentials or network access.",
+    "analogy": "A driving simulator teaches controls and failure handling before a learner enters real traffic. A simulated gateway is honest about its boundary.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface Gateway { public function charge(int $cents): string; }\nfinal class RecordingGateway implements Gateway\n{\n    public array $charges = [];\n    public function charge(int $cents): string { $this->charges[] = $cents; return 'simulated-receipt'; }\n}\nfinal class Checkout\n{\n    public function __construct(private Gateway $gateway) {}\n    public function pay(int $cents): string\n    {\n        if ($cents <= 0) throw new InvalidArgumentException('Positive total required.');\n        return $this->gateway->charge($cents);\n    }\n}\n$fake = new RecordingGateway;\n$receipt = (new Checkout($fake))->pay(1500);\necho $receipt . ': ' . count($fake->charges);",
+    "output": "simulated-receipt: 1",
+    "steps": "1. Gateway is the use case's required capability.\n2. RecordingGateway records a deterministic simulated side effect.\n3. Checkout rejects invalid amounts before delegation.\n4. The fake records exactly one charge of 1500.\n5. Production payment and refund operations require additional durable boundaries.",
+    "bad": "A controller selecting providers, calculating totals, charging, emailing, and swallowing failures violates several boundaries at once. Returning a success receipt from a failed adapter corrupts the behavioral contract.",
+    "laravel": "Bind Gateway to a simulation in local configuration. Replace it with a recording instance in tests. A future production provider adapter must normalize response/failure semantics and use configured secrets outside source control.",
+    "exercise": "Implement a DecliningGateway and show that an exception prevents the order from being marked paid. Add a separate RefundGateway contract rather than forcing every charge-only provider to implement refunds.",
+    "solution": "Use a domain PaymentDeclined exception, assert no paid-state write after it, and assert the fake charge amount on success. Share contract tests for accepted input and documented failures. Keep real provider testing separate.",
+    "question": "Which test belongs in the first simulated checkout milestone?",
+    "options": [
+      "Reject a nonpositive total before any gateway charge",
+      "Use a live production card credential",
+      "Assert every method is static",
+      "Assume retries cannot duplicate charges"
+    ],
+    "answer": 0,
+    "interview": "How do all five SOLID ideas fit without overengineering? Define a few coherent collaborators and stable capabilities, then verify behavior. Do not add an abstraction unless it clarifies a real boundary.",
+    "takeaway": "Make the simulation testable and explicit; treat real financial side effects as a separate integration milestone.",
+    "tags": [
+      "projects",
+      "payments",
+      "solid",
+      "testing"
+    ],
+    "project": {
+      "brief": "Create a small checkout application with simulated card and wallet providers. The first release must never perform a real charge.",
+      "milestones": [
+        "Define amount and currency invariants and a gateway contract with documented failures.",
+        "Implement two simulated providers and a recording fake.",
+        "Implement checkout orchestration with a thin controller and Form Request.",
+        "Bind provider selection through configuration and test substitution.",
+        "Design, but do not enable, real-provider idempotency, webhook verification, and reconciliation."
+      ],
+      "acceptance_criteria": [
+        "Invalid amounts never reach the gateway.",
+        "Both implementations pass the same behavioral contract tests.",
+        "Provider selection changes without editing checkout policy.",
+        "No credentials or real external charges are required."
+      ]
+    }
+  },
+  {
+    "module": 10,
+    "title": "Project B: an inventory management API",
+    "definition": "Build an authenticated product and inventory API with explicit policies, validated resources, pagination, and transaction-safe stock movements.",
+    "why": "Separate product metadata from stock movements. A movement records a signed quantity, a product, the actor, and a reason. The current balance can be derived or maintained with a carefully tested transactional invariant. Concurrent withdrawals must not create negative stock.\n\nDesign routes for product CRUD and a separate movement command. Use Sanctum for a supported API authentication flow, policies for actions, Form Requests for input, and Resources for response shape. Filter and sort through allowlists; paginate results and eager load only required relationships.\n\nA movement transaction should lock the relevant stock row before checking available quantity, write the movement, and update the balance. An API idempotency key can prevent a retried request creating the same movement twice. Enforce its uniqueness in the database, not only with a cache check.",
+    "analogy": "A warehouse ledger records every arrival and dispatch. Updating only the shelf count loses the reason and actor behind the change.",
+    "code": "// Illustrative stock adjustment use case; tables/models belong to the project.\nreturn DB::transaction(function () use ($productId, $delta, $actorId) {\n    $stock = Stock::where('product_id', $productId)->lockForUpdate()->firstOrFail();\n    if ($stock->quantity + $delta < 0) {\n        throw new InsufficientStock;\n    }\n    $stock->movements()->create(['delta' => $delta, 'actor_id' => $actorId]);\n    $stock->update(['quantity' => $stock->quantity + $delta]);\n    return $stock->fresh();\n});",
+    "output": "A valid movement and balance update commit together. Insufficient stock throws before either write. Concurrent correctness must be verified against MySQL, not inferred from SQLite tests.",
+    "steps": "1. Authorization and input validation happen before this use case.\n2. The transaction locks the relevant stock row.\n3. The domain rule checks the proposed balance.\n4. Movement and balance writes share the transaction.\n5. An exception rolls back local writes.",
+    "runnable": false,
+    "bad": "Reading quantity, checking it, then saving outside a lock lets two requests both consume the same stock. A product CRUD endpoint that permits arbitrary stock overwrites bypasses the audit trail.",
+    "laravel": "Create ProductPolicy, StoreProductRequest, StockAdjustmentRequest, ProductResource, and an AdjustStock action. Use auth:sanctum on API routes. Feature tests should cover guest 401, denied 403, invalid 422, and successful paginated responses.",
+    "exercise": "Implement GET/POST/PATCH/DELETE products and POST stock movements in a separate Laravel exercise project. Test two concurrent stock withdrawals against a disposable MySQL schema.",
+    "solution": "Start with schema constraints and factories, then policies/validation/resources. Use transactions with a consistent lock order, idempotency keys for retries, and a feature test proving failure does not write a movement. Record actual concurrent-test outcomes.",
+    "question": "Where must the stock availability check occur to protect concurrent withdrawals?",
+    "options": [
+      "Inside the same transaction after obtaining the relevant row lock",
+      "Only in Vue before submission",
+      "After committing the movement",
+      "Only in an API documentation example"
+    ],
+    "answer": 0,
+    "interview": "Why keep movements separate from product CRUD? Stock changes have domain rules, audit, concurrency, and retry semantics beyond editing a name or description.",
+    "takeaway": "Treat inventory as a transactional ledger and test API permission and concurrency boundaries.",
+    "tags": [
+      "projects",
+      "inventory",
+      "api",
+      "transactions"
+    ],
+    "project": {
+      "brief": "Implement a Products REST API and an auditable stock ledger in a separate learning project. The academy currently provides this blueprint, not a deployed inventory service.",
+      "milestones": [
+        "Create categories, products, stock balances, and inventory movement migrations and factories.",
+        "Add Sanctum authentication and product/stock policies.",
+        "Build product CRUD with Form Requests, Resources, filters, and pagination.",
+        "Implement locked stock adjustments and database-backed idempotency.",
+        "Write authorization, rollback, query-growth, and MySQL concurrency tests."
+      ],
+      "acceptance_criteria": [
+        "Guests and unauthorized users cannot mutate inventory.",
+        "Validation rejects invalid prices and malformed adjustments.",
+        "Insufficient stock writes neither a movement nor an invalid balance.",
+        "Product listing is paginated and has bounded relationship queries."
+      ]
+    }
+  },
+  {
+    "module": 10,
+    "title": "Project C: a resilient notification system",
+    "definition": "Build notification delivery around events, queued jobs, explicit channel capabilities, user preferences, and durable retry behavior.",
+    "why": "A business event such as InvoiceIssued expresses an occurrence. A listener can choose recipients and enqueue notification delivery, keeping the HTTP request focused. Notifications format messages for channels such as email or database; observers react to model persistence and should not be confused with every domain event.\n\nPersist user preferences and honor them when planning delivery. Store enough delivery state to retry failures and diagnose duplicates without logging message secrets. Revalidate recipient ownership and tenant context in asynchronous work rather than assuming a serialized request remains valid forever.\n\nA fake proves dispatch intent; job tests prove orchestration; provider adapter tests prove API mapping. End-to-end delivery needs an explicitly configured provider and operational verification. This guide uses simulations and does not send live email or SMS.",
+    "analogy": "An airport announcement system decides who needs a message, which channel reaches them, and how to retry a failed speaker without repeating every announcement everywhere.",
+    "code": "// An event is emitted after the local transaction succeeds.\nInvoiceIssued::dispatch($invoice->id);\n\n// A listener queues delivery after commit where needed.\nSendInvoiceNotification::dispatch($invoice->id, $recipient->id)->afterCommit();\n\n// Dispatch-intent test:\nQueue::fake();\n$service->issue($invoice);\nQueue::assertPushed(SendInvoiceNotification::class);",
+    "output": "The application records the intended queued delivery. This test does not prove a worker or external email provider delivered the message.",
+    "steps": "1. The domain action produces a meaningful event.\n2. A listener selects the appropriate delivery job.\n3. The job carries stable IDs rather than huge object graphs.\n4. A queue fake captures dispatch intent.\n5. Separate tests exercise delivery state, preferences, and retries.",
+    "runnable": false,
+    "bad": "Sending synchronously from every model observer can duplicate messages and slow unrelated saves. Retrying a provider call without tracking delivery identity can repeat the same notification.",
+    "laravel": "Use ShouldQueue for suitable listeners/jobs, Notifications for channel formatting, and database notifications for in-app history. Start workers only after a queue backend is configured. Add bounded backoff and failed-job monitoring.",
+    "exercise": "Add email and database notification preferences. Test a disabled email preference, a provider failure, and a repeated delivery attempt.",
+    "solution": "Separate delivery planning from channel sending. Use a durable delivery identifier, fake providers in tests, and mark success only after provider acknowledgment. Decide how to handle uncertain acknowledgment instead of assuming exactly-once delivery.",
+    "question": "What does Queue::assertPushed prove?",
+    "options": [
+      "The job was dispatched in the tested workflow",
+      "The provider delivered the email",
+      "The worker never retries",
+      "The recipient opened the message"
+    ],
+    "answer": 0,
+    "interview": "Event, observer, or direct call? Use domain events for meaningful occurrences, observers for persistence lifecycle reactions, and direct calls when a required synchronous dependency should remain explicit.",
+    "takeaway": "Separate planning, dispatch, execution, and delivery evidence so failures can be retried honestly.",
+    "tags": [
+      "projects",
+      "notifications",
+      "events",
+      "queues"
+    ],
+    "project": {
+      "brief": "Create a notification center with preferences, simulated email delivery, database messages, retry tracking, and tests. No external provider is required for the first release.",
+      "milestones": [
+        "Define InvoiceIssued and explicit recipient selection rules.",
+        "Store per-user channel preferences and delivery records.",
+        "Queue delivery after committed state is available.",
+        "Implement fake email and database notification channels.",
+        "Add retry/backoff, failed-delivery visibility, and dispatch/job tests."
+      ],
+      "acceptance_criteria": [
+        "Disabled preferences are respected.",
+        "Delivery failure remains visible and retryable.",
+        "Repeated processing does not create duplicate delivery records.",
+        "Tests distinguish enqueue intent from completed delivery."
+      ]
+    }
+  },
+  {
+    "module": 10,
+    "title": "Project D: invoices, value objects, and reporting",
+    "definition": "Build an invoice workflow whose monetary rules, persistence, authorization, and export rendering can evolve independently.",
+    "why": "Model invoice lines with explicit quantities, unit prices, tax policy, currency, and rounding rules. Snapshot facts that must not change when a product is edited later. A Money value object can enforce currency matching; an invoice entity carries identity and lifecycle.\n\nA report query can use SQL aggregates and projections instead of hydrating the whole domain model. A DTO can transport that projection to CSV/PDF adapters. Use a ReportExporter interface only if the interchangeable export capability is useful. Streaming CSV reduces memory; large PDF rendering can be queued.\n\nAuthorize report access before generating or downloading a file, keep private artifacts on a private disk, and expire them under a retention policy. Spreadsheet exports need safe treatment of untrusted formula-like cells. Avoid claiming PDF output works until a selected renderer is installed and verified.",
+    "analogy": "An invoice is a historical receipt, not a live window into today's product catalog. An export is another presentation of those recorded facts.",
+    "code": "// Streaming CSV response excerpt; authorize before this point.\nreturn response()->streamDownload(function () use ($query) {\n    $output = fopen('php://output', 'w');\n    fputcsv($output, ['Invoice', 'Currency', 'Total cents'], ',', '\"', '');\n    foreach ($query->orderBy('id')->lazyById(500) as $invoice) {\n        fputcsv($output, [$invoice->id, $invoice->currency, $invoice->total_cents], ',', '\"', '');\n    }\n    fclose($output);\n}, 'invoices.csv', ['Content-Type' => 'text/csv']);",
+    "output": "An authorized caller downloads a streamed CSV. The query must already be scoped to that caller's permitted records. No PDF renderer is implied by this snippet.",
+    "steps": "1. Authorize and scope the report query.\n2. Open an output stream rather than building one huge string.\n3. Write headers with proper CSV quoting.\n4. Iterate by stable IDs in bounded batches.\n5. Close the stream after writing.",
+    "runnable": false,
+    "bad": "Recalculating a paid invoice from changed product prices alters history. Storing an export under a guessable public URL bypasses download permission checks. Passing an unscoped query into an exporter can leak cross-tenant rows.",
+    "laravel": "Use an InvoiceService or CreateInvoice action for the write workflow, a report query object for projections, and adapters for CSV/PDF. Test rounding and currency as unit rules, persistence with feature tests, and download authorization separately.",
+    "exercise": "Define an invoice rounding policy and test a fractional-tax boundary. Build an authorized CSV export and test a field containing a comma and a user without report permission.",
+    "solution": "Document whether rounding happens per line or at aggregate level. Use integer minor units with an explicit tax precision policy. Round-trip CSV parsing in tests and assertForbidden for unauthorized exports.",
+    "question": "Why snapshot invoice line prices?",
+    "options": [
+      "To preserve historical facts when product prices change",
+      "To avoid all database indexes",
+      "To make every invoice public",
+      "To eliminate currency rules"
+    ],
+    "answer": 0,
+    "interview": "DTO versus value object? A DTO carries data across a boundary; a value object represents domain meaning, equality, and invariants. They can have similar syntax but different responsibilities.",
+    "takeaway": "Protect invoice history and monetary rules, then render authorized projections through bounded exports.",
+    "tags": [
+      "projects",
+      "invoices",
+      "reports",
+      "value objects"
+    ],
+    "project": {
+      "brief": "Build invoice creation and CSV reporting first. Add a PDF renderer as a separately configured and tested adapter, rather than presenting a download mockup.",
+      "milestones": [
+        "Define Money and invoice line snapshots with rounding policy tests.",
+        "Persist invoice and line records transactionally with policies and validation.",
+        "Create aggregate report queries and DTO projections.",
+        "Stream authorized CSV exports from private scoped data.",
+        "Queue large exports and add private file retention; integrate and test PDF separately."
+      ],
+      "acceptance_criteria": [
+        "Product edits do not alter existing invoice totals.",
+        "Currency mismatches fail explicitly.",
+        "Unauthorized users cannot generate or download reports.",
+        "Large CSV exports iterate in bounded memory."
+      ]
+    }
+  },
+  {
+    "module": 10,
+    "title": "Project E: a modular mini ERP",
+    "definition": "Build a small enterprise learning project as cohesive modules with explicit use cases, permissions, transactional boundaries, and audit trails.",
+    "why": "Start with users/permissions, products/categories, inventory, customers/suppliers, sales/purchases, invoices, reports, audit logs, and notifications. Treat this as a modular monolith before considering distributed services: one deployment can still maintain clear module boundaries.\n\nAn application action such as ConfirmSale coordinates permission, stock reservation, invoice issuance, and event publication. Domain objects protect invariants, while infrastructure adapters persist and deliver. Avoid a controller that owns every ERP workflow, and avoid a generic repository abstraction that erases module-specific rules.\n\nAudit records should capture actor, action, entity identity, timestamp, and safe structured changes. Do not log passwords, access tokens, or unnecessary personal data. APIs need consistent resources, pagination, validation, policy checks, and transaction/retry semantics. Each module needs migrations, factories, seeders, tests, and a short architecture note before the next module expands scope.",
+    "analogy": "A small town has specialized offices with clear responsibilities, yet shares roads and public services. It does not need a separate country for every office.",
+    "code": "// Proposed module structure for the separate ERP exercise:\napp/\n  Domain/Inventory/AdjustStock.php\n  Domain/Sales/ConfirmSale.php\n  Domain/Billing/IssueInvoice.php\n  Http/Controllers/Api/ProductController.php\n  Http/Requests/ConfirmSaleRequest.php\n  Policies/SalePolicy.php\n  Jobs/DeliverInvoice.php\n  Events/SaleConfirmed.php\n\n// Core flow:\n// Authorize -> validate -> lock/check stock -> persist sale + lines\n// -> persist stock movements -> invoice snapshot -> commit -> notify",
+    "language": "bash",
+    "output": "An architecture blueprint, not an already-deployed ERP. Each milestone must be implemented and tested in the exercise application before claiming it works.",
+    "steps": "1. Organize by coherent domain/use-case responsibility.\n2. Keep HTTP parsing and authorization explicit.\n3. Put related local invariants under one reviewed transaction.\n4. Publish external reactions after committed state.\n5. Grow modules only after their tests and documentation are complete.",
+    "runnable": false,
+    "bad": "One EnterpriseController with every operation makes permission and transaction boundaries hard to review. Splitting into microservices before defining invariants adds distributed failure modes without solving the domain design.",
+    "laravel": "A conventional Laravel app can host this modular monolith without a new architecture package. Start with policies, Form Requests, actions, Eloquent relationships, and events. Add interfaces only for meaningful contracts or external adapters.",
+    "exercise": "Implement a single vertical slice: a manager confirms a sale, stock decreases, an invoice snapshot is created, an audit entry is written, and a notification job is dispatched after commit.",
+    "solution": "Use factories for manager/product/customer fixtures. Assert denied employees cannot confirm. Test insufficient stock rolls back every local write, a successful sale persists all records, and a retry does not confirm twice. Expand purchasing only after this slice passes.",
+    "question": "What is the best first delivery for the ERP project?",
+    "options": [
+      "One tested vertical workflow with clear permissions and invariants",
+      "Every feature in one huge controller",
+      "A microservice per database table",
+      "A dashboard of hardcoded statistics"
+    ],
+    "answer": 0,
+    "interview": "Why a modular monolith first? It allows explicit domain boundaries and simple transactions while keeping deployment manageable. Distribution should follow measured organizational and operational needs.",
+    "takeaway": "Deliver vertical slices with permission, invariants, audit, tests, and documentation before expanding feature breadth.",
+    "tags": [
+      "projects",
+      "erp",
+      "architecture",
+      "audit"
+    ],
+    "project": {
+      "brief": "Create a separate mini ERP progressively. This academy provides the blueprint and exercises; a complete ERP implementation is a remaining curriculum deliverable.",
+      "milestones": [
+        "Users, roles, and permission policies with denial tests.",
+        "Products/categories and inventory movement ledger with concurrency rules.",
+        "Customers/suppliers and a complete confirm-sale vertical slice.",
+        "Purchasing, invoice snapshots, and authorized aggregate reporting.",
+        "Audit logs, queued notifications, paginated APIs, deployment and restore drill."
+      ],
+      "acceptance_criteria": [
+        "Every mutation has validation and authorization tests.",
+        "Stock, sale, invoice, and audit changes have explicit transaction semantics.",
+        "Retries cannot duplicate a confirmed sale.",
+        "No giant controller or untested external integration stands in for a completed module."
+      ]
+    }
+  }
+]

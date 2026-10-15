@@ -1,0 +1,152 @@
+[
+  {
+    "module": 2,
+    "title": "Single Responsibility Principle",
+    "definition": "A class should have one coherent responsibility and one main reason to change. A responsibility is a business or technical concern, not a count of methods.",
+    "why": "A controller that validates inputs, calculates an invoice, writes a PDF, sends mail, and produces analytics changes for many unrelated reasons. Each change carries a risk to the other concerns and requires broad test setup.\n\nSRP suggests boundaries around reasons for change: a Form Request handles input validation; an InvoiceCalculator owns arithmetic; an application service coordinates persistence; a PDF generator handles rendering; a notification delivers messages. The HTTP controller coordinates request and response.\n\nToo much splitting has a cost. A class for every line or trivial expression creates indirection without a coherent capability. Start with distinct responsibilities, not an arbitrary target for lines per class. Test pure calculation without a database and test the controller's authorization/response separately.",
+    "analogy": "A restaurant has a chef and an accountant because menu changes and tax reporting change for different reasons. It does not employ a different person to move each spoon.",
+    "code": "<?php\ndeclare(strict_types=1);\nfinal class InvoiceCalculator\n{\n    /** @param list<int> $lineTotals */\n    public function subtotal(array $lineTotals): int\n    {\n        foreach ($lineTotals as $total) {\n            if ($total < 0) throw new InvalidArgumentException('Negative line total.');\n        }\n        return array_sum($lineTotals);\n    }\n}\n$calculator = new InvoiceCalculator;\necho $calculator->subtotal([1200, 800]);",
+    "output": "2000",
+    "steps": "1. InvoiceCalculator owns arithmetic and its input invariant.\n2. It has no Request, database, PDF, or email dependency.\n3. It rejects invalid line totals before returning a sum.\n4. A test can call it directly without Laravel bootstrapping.\n5. Another class may use the result to orchestrate an invoice workflow.",
+    "bad": "InvoiceController::store validating raw inputs, generating a PDF, and calling mail() combines HTTP, calculation, rendering, and delivery concerns. Moving the same giant body into InvoiceService changes its location without improving responsibility boundaries.",
+    "laravel": "Let StoreInvoiceRequest authorize and validate. A thin store controller calls CreateInvoice with validated data, then returns a redirect or JSON Resource. CreateInvoice composes InvoiceCalculator and persists local records transactionally. Queue PDF generation and delivery after commit where business semantics permit.",
+    "exercise": "Sketch class responsibilities for an invoice that must be saved, exported as PDF, and emailed. Write a pure unit test for subtotal([1200,800]) and a negative-line rejection.",
+    "solution": "Use StoreInvoiceRequest, InvoiceController, CreateInvoice, InvoiceCalculator, InvoicePdfGenerator, and an InvoiceReady notification. AssertSame(2000, calculator result); expect InvalidArgumentException for [-1]. Avoid splitting sum into its own service.",
+    "question": "Which change best applies SRP to a large invoice controller?",
+    "options": [
+      "Separate coherent validation, calculation, rendering, and delivery concerns",
+      "Create one class for every statement",
+      "Move all code unchanged into a giant service",
+      "Make every method static"
+    ],
+    "answer": 0,
+    "interview": "Does SRP mean one method per class? No. Several methods may serve one coherent responsibility. The important question is why the class would change.",
+    "takeaway": "Separate concerns with distinct reasons to change, and keep the resulting workflow easy to follow.",
+    "tags": [
+      "solid",
+      "srp",
+      "controllers",
+      "services"
+    ]
+  },
+  {
+    "module": 2,
+    "title": "Open/Closed Principle",
+    "definition": "Code should allow useful new behavior through extension while stable callers avoid unnecessary modification.",
+    "why": "A discount calculator that switches on every discount name must be edited each time marketing introduces a strategy. Each edit can break existing branches. A Discount contract allows new strategies to be introduced without rewriting a basket's calculation logic.\n\nClosed for modification is not a ban on changing code. Requirements evolve and bugs need fixing. Choose extension points around variations you actually expect, and keep selection/configuration in one deliberate place. Extending a system still requires registering a new implementation and testing its contract.\n\nA strategy should communicate units and invariants: can a discount make the total negative, does it operate before tax, and does it stack? Interfaces cannot answer these questions automatically. Document them and write contract tests.",
+    "analogy": "A camera accepts compatible lenses without redesigning its body for every new focal length.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface Discount { public function apply(int $subtotal): int; }\nfinal class NoDiscount implements Discount\n{\n    public function apply(int $subtotal): int { return $subtotal; }\n}\nfinal class TenPercentOff implements Discount\n{\n    public function apply(int $subtotal): int { return $subtotal - (int) round($subtotal / 10); }\n}\nfinal class Basket\n{\n    public function __construct(private Discount $discount) {}\n    public function total(int $subtotal): int\n    {\n        if ($subtotal < 0) throw new InvalidArgumentException('Negative subtotal.');\n        return $this->discount->apply($subtotal);\n    }\n}\necho (new Basket(new TenPercentOff))->total(1000);",
+    "output": "900",
+    "steps": "1. Discount defines the variation point.\n2. Two implementations calculate different valid totals.\n3. Basket handles its precondition and delegates policy.\n4. A new discount can be added without another branch in Basket.\n5. Selection still happens outside Basket.",
+    "bad": "A switch statement repeated across controllers spreads provider knowledge. Conversely, a plugin registry for a single fixed tax constant may add complexity before it is needed.",
+    "laravel": "Bind Discount to the configured implementation in a provider or use contextual binding for specific use cases. A validated discount code can be mapped through a small resolver; do not let request input instantiate arbitrary class names.",
+    "exercise": "Implement a FixedDiscount that clamps the result to zero. Add it without modifying Basket. Test a subtotal smaller than the discount.",
+    "solution": "Inject fixed cents into the strategy, reject a negative fixed amount, and return max(0, $subtotal - $fixedCents). Run the same nonnegative-result contract test for each strategy.",
+    "question": "Where should strategy selection usually live?",
+    "options": [
+      "At a deliberate composition or configuration boundary",
+      "In a new branch inside every caller",
+      "Inside a global mutable variable",
+      "In unvalidated user-provided class names"
+    ],
+    "answer": 0,
+    "interview": "Can OCP ever justify changing an existing class? Yes. It discourages unnecessary changes to stable policy, not corrections or sensible redesign as requirements become clearer.",
+    "takeaway": "Extend at real variation points and make provider selection explicit and validated.",
+    "tags": [
+      "solid",
+      "ocp",
+      "strategy",
+      "discounts"
+    ]
+  },
+  {
+    "module": 2,
+    "title": "Liskov Substitution Principle",
+    "definition": "An implementation must be usable wherever its promised contract is expected without surprising callers or breaking their correctness.",
+    "why": "PHP checks compatible signatures, but it cannot prove behavioral substitutability. If a parent promises export(): string for any valid report, a child that throws 'CSV only' for an otherwise valid report breaks the caller's expectation.\n\nA subtype should not require stronger preconditions, weaken promised postconditions, or violate the abstraction's invariants. It should preserve documented exception semantics. A read-only repository should not implement a WritableRepository contract and throw UnsupportedOperationException on every save; model capabilities separately.\n\nUse contract tests against every implementation. Cover boundaries, empty input, failures, and returned values. A mock can prove your caller invoked a method, but a shared implementation test is needed to establish that each concrete strategy honors the promise.",
+    "analogy": "Any elevator advertised as serving every floor must reach those floors. A replacement that refuses the top floor does not honor the original service promise.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface Exporter\n{\n    /** Export any list of names as text, including an empty list. */\n    public function export(array $names): string;\n}\nfinal class JsonExporter implements Exporter\n{\n    public function export(array $names): string { return json_encode(array_values($names), JSON_THROW_ON_ERROR); }\n}\nfinal class LineExporter implements Exporter\n{\n    public function export(array $names): string { return implode(\"\\n\", $names); }\n}\nforeach ([new JsonExporter, new LineExporter] as $exporter) {\n    echo get_debug_type($exporter->export([])) . \"\\n\";\n}",
+    "output": "string\nstring\n",
+    "steps": "1. The contract explicitly includes empty input.\n2. JsonExporter returns [] for an empty list.\n3. LineExporter returns an empty string.\n4. Both preserve the promised string result.\n5. A stronger test would verify documented content semantics for nonempty inputs too.",
+    "bad": "An exporter with a matching method signature that rejects empty input violates this contract. A child withdrawing permission to perform an operation promised by its parent may be a modeling error rather than a problem to fix with catch blocks.",
+    "laravel": "For a cache-backed and Eloquent-backed repository, share tests for missing IDs, tenant isolation, and persistence semantics. If the cache is eventually consistent while callers require immediate read-after-write, the implementations are not interchangeable under that contract.",
+    "exercise": "Write a data-driven contract test that both exporters accept [] and ['Ada']. Introduce a deliberately broken exporter rejecting [] and confirm the test catches it.",
+    "solution": "For each implementation assertIsString(export([])) and assertStringContainsString('Ada', export(['Ada'])). Do not demand identical formatting unless the interface contract actually promises it.",
+    "question": "Which is a behavioral LSP violation?",
+    "options": [
+      "An implementation rejects input the contract promises to accept",
+      "An implementation uses a different internal algorithm",
+      "An implementation is a final class",
+      "An implementation has an extra private method"
+    ],
+    "answer": 0,
+    "interview": "Is a compatible PHP method signature sufficient for LSP? No. Preconditions, postconditions, invariants, and documented failures also have to remain valid.",
+    "takeaway": "Define behavioral promises and run shared contract tests, rather than relying only on type compatibility.",
+    "tags": [
+      "solid",
+      "lsp",
+      "contracts",
+      "testing"
+    ]
+  },
+  {
+    "module": 2,
+    "title": "Interface Segregation Principle",
+    "definition": "Clients should depend only on the capabilities they need. Split contracts when independent clients require independent behavior.",
+    "why": "A WorkerInterface with work, eat, sleep, exportReport, and sendEmail forces unrelated implementations to supply methods they cannot meaningfully support. Empty methods and 'not supported' exceptions are clues that the contract mixes capabilities.\n\nUse focused contracts such as ReportExporter and ReportSender. A use case that only exports should receive ReportExporter. An implementation may implement several small interfaces when it supports all those capabilities.\n\nDo not mechanically make one interface per method. A coherent multi-method transaction contract can be useful. Split based on distinct clients and reasons to vary, while keeping the API understandable. ISP complements LSP: avoiding unsupported operations makes it easier for each implementation to honor the capability it claims.",
+    "analogy": "A restaurant guest needs a menu, not the staff payroll manual. Each audience receives the interface relevant to its task.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface ReportExporter { public function export(array $rows): string; }\ninterface ReportSender { public function send(string $report): void; }\nfinal class CsvExporter implements ReportExporter\n{\n    public function export(array $rows): string\n    {\n        $stream = fopen('php://temp', 'r+');\n        foreach ($rows as $row) fputcsv($stream, $row, ',', '\"', '');\n        rewind($stream);\n        $csv = stream_get_contents($stream);\n        fclose($stream);\n        return $csv;\n    }\n}\necho (new CsvExporter)->export([['name', 'count'], ['Ada', 2]]);",
+    "output": "name,count\nAda,2\n",
+    "steps": "1. Export and delivery are separate capabilities.\n2. CsvExporter only claims to export.\n3. fputcsv handles quoting, including commas inside fields.\n4. A temporary stream collects output, then is closed.\n5. No dummy send method is required.",
+    "bad": "A CsvExporter implementing sendEmail by throwing an exception is evidence of an oversized contract. Building CSV with implode(',') loses quoting rules and can corrupt fields.",
+    "laravel": "An export controller can depend on ReportExporter and stream a response. A queued delivery job can depend on ReportSender. Keep authorization checks in the endpoint/job use case, and handle spreadsheet formula injection for untrusted CSV cell content when exporting for spreadsheet users.",
+    "exercise": "Create JsonReportExporter implementing only ReportExporter. Explain whether it should be required to send emails. Test a CSV field containing a comma.",
+    "solution": "Return json_encode($rows, JSON_THROW_ON_ERROR). No email method is needed. For CSV, use fgetcsv to round-trip a row containing 'Ada, Jr.' rather than assuming a hand-built string will be valid.",
+    "question": "What suggests an interface needs segregation?",
+    "options": [
+      "Implementations have no-op or unsupported methods unrelated to their clients",
+      "It has more than one method under any circumstances",
+      "It has a descriptive name",
+      "It is injected through a constructor"
+    ],
+    "answer": 0,
+    "interview": "ISP versus SRP? ISP focuses on client dependencies on contracts; SRP focuses on coherent responsibilities and reasons for a module or class to change.",
+    "takeaway": "Group capabilities around client needs, and avoid forcing implementations to promise unsupported behavior.",
+    "tags": [
+      "solid",
+      "isp",
+      "interfaces",
+      "exports"
+    ]
+  },
+  {
+    "module": 2,
+    "title": "Dependency Inversion Principle",
+    "definition": "High-level policy should depend on abstractions that express its needs. Infrastructure should implement those abstractions instead of defining the policy's dependency shape.",
+    "why": "An InvoiceService directly creating an EloquentInvoiceRepository knows a storage detail and is harder to test without a database. An InvoiceRepositoryInterface defines the narrow storage capability the use case requires. Eloquent and an in-memory fake can satisfy it.\n\nThe abstraction belongs conceptually to the policy boundary, even if all code lives in one Laravel application. Dependency injection supplies the implementation; dependency inversion controls the direction of source dependencies.\n\nA repository for every Eloquent model is unnecessary when it only forwards find and save without a useful boundary. Use one for a domain-facing aggregate contract, multiple storage implementations, or a deliberate testing boundary. Direct Eloquent is often simpler for ordinary CRUD.",
+    "analogy": "A business specifies the records it needs, then chooses a filing system that meets that specification. It does not rewrite its rules around the shape of a particular filing cabinet.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface InvoiceRepositoryInterface\n{\n    public function totalCents(int $invoiceId): int;\n}\nfinal class InMemoryInvoices implements InvoiceRepositoryInterface\n{\n    public function totalCents(int $invoiceId): int\n    {\n        if ($invoiceId !== 1) throw new OutOfBoundsException('Invoice not found.');\n        return 2500;\n    }\n}\nfinal class InvoiceService\n{\n    public function __construct(private InvoiceRepositoryInterface $invoices) {}\n    public function amountDue(int $invoiceId): int { return $this->invoices->totalCents($invoiceId); }\n}\necho (new InvoiceService(new InMemoryInvoices))->amountDue(1);",
+    "output": "2500",
+    "steps": "1. The interface states the query needed by policy.\n2. An in-memory implementation is deterministic.\n3. InvoiceService only depends on the contract.\n4. Construction supplies the implementation without a service locator call.\n5. A production adapter can use Eloquent while preserving not-found and cents semantics.",
+    "bad": "Calling app(EloquentInvoiceRepository::class) inside every method hides dependencies and couples policy to the adapter. An interface returning an Eloquent Builder may leak storage concerns back through the abstraction.",
+    "laravel": "Create EloquentInvoiceRepository implements InvoiceRepositoryInterface with a tenant-scoped Invoice query and explicit not-found behavior. Bind the interface in AppServiceProvider::register. In tests replace it with an in-memory instance; keep separate database adapter tests for actual SQL behavior.",
+    "exercise": "Implement an adapter returning totals from an injected array. Test invoice 1, a missing invoice, and a zero-valued invoice. Sketch the production provider binding.",
+    "solution": "Use array_key_exists rather than truthiness so zero is valid. Throw the documented exception for a missing ID. Bind InvoiceRepositoryInterface::class to EloquentInvoiceRepository::class; replace that binding with an instance in a feature test.",
+    "question": "Which statement describes DIP rather than just DI?",
+    "options": [
+      "High-level policy depends on a contract implemented by infrastructure",
+      "A constructor receives any concrete object",
+      "A service creates every dependency itself",
+      "An interface must wrap every Eloquent model"
+    ],
+    "answer": 0,
+    "interview": "Does injecting EloquentInvoiceRepository apply DIP? It applies injection, but the service still depends directly on the concrete storage adapter. A meaningful policy-defined abstraction changes that dependency direction.",
+    "takeaway": "Choose meaningful contracts, keep infrastructure details behind them, and avoid repositories without a concrete purpose.",
+    "tags": [
+      "solid",
+      "dip",
+      "repositories",
+      "dependency injection"
+    ]
+  }
+]

@@ -1,0 +1,121 @@
+[
+  {
+    "module": 0,
+    "title": "PHP syntax, variables, and strict types",
+    "definition": "PHP executes on the server. A variable is a named value whose name starts with $. A type declaration describes the values a function accepts and returns.",
+    "why": "A PHP file starts with <?php. Statements normally end with a semicolon. Variables are case-sensitive; $price and $Price are different. Strings, integers, floats, booleans, arrays, objects, and null represent different kinds of information.\n\nWithout strict_types, PHP may coerce scalar arguments, such as the string '12' into the integer 12. A strict_types declaration applies to calls made from that file. It does not validate incoming HTTP data, turn PHP into a statically compiled language, or eliminate every conversion. An int can still satisfy a float parameter.\n\nStore currency as integer minor units for simple single-currency examples. Binary floating-point values cannot represent every decimal exactly. A declared return type catches accidental changes in a function's contract; a named constant describes a value that should not change.",
+    "analogy": "Think of a typed function as a labeled socket. Its label tells callers what fits; request validation checks the delivery before you plug it in.",
+    "code": "<?php\ndeclare(strict_types=1);\n\nconst TAX_PERCENT = 10;\nfunction total(int $subtotalCents, int $taxPercent): int\n{\n    return $subtotalCents + (int) round($subtotalCents * $taxPercent / 100);\n}\n$subtotal = 2500;\necho total($subtotal, TAX_PERCENT);",
+    "output": "2750",
+    "steps": "1. strict_types makes scalar calls in this file strict.\n2. TAX_PERCENT is a constant, while $subtotal is a variable.\n3. total receives integer cents and returns an integer.\n4. round makes the rounding decision visible before converting to int.\n5. The function returns 2,750 cents; it does not print a currency symbol.",
+    "bad": "Using total('2500', 10) from a strict file raises TypeError. Using a float price and repeatedly rounding after arithmetic can accumulate errors. Do not silence those failures with the @ operator.",
+    "laravel": "A Form Request can validate subtotal_cents as required|integer|min:0. Laravel validation often accepts numeric strings, so explicitly normalize validated input to an int before calling a strict domain function. Never read env() throughout business logic; expose configuration through config files.",
+    "exercise": "Add a shippingCents parameter with a default of zero. Reject negative subtotal, tax, or shipping with InvalidArgumentException. Predict the result for subtotal 1000, tax 10, shipping 250.",
+    "solution": "Keep tax on subtotal only: return $subtotalCents + (int) round($subtotalCents * $taxPercent / 100) + $shippingCents. The example returns 1350. Add tests for zero and negative input.",
+    "question": "What does declare(strict_types=1) control?",
+    "options": [
+      "Scalar coercion for function calls made from that file",
+      "All HTTP input validation",
+      "Whether PHP is compiled ahead of time",
+      "Whether variables can change values"
+    ],
+    "answer": 0,
+    "interview": "Does a type declaration replace validation? No. Types describe a runtime shape; validation and domain rules establish whether a value is acceptable, such as a positive amount.",
+    "takeaway": "Separate input validation, scalar normalization, and business rules. Use explicit types and document rounding policies.",
+    "tags": [
+      "php",
+      "strict_types",
+      "variables"
+    ]
+  },
+  {
+    "module": 0,
+    "title": "Arrays, loops, and collection transformations",
+    "definition": "A PHP array is an ordered map. It can behave as a list with integer keys or a lookup table with string keys.",
+    "why": "A foreach loop visits key/value pairs without manual index arithmetic. Filtering retains matching values; mapping transforms values; reducing folds values into a result. These operations express different intentions.\n\narray_filter preserves keys. A filtered list may need array_values before JSON serialization, otherwise JSON can become an object with sparse numeric keys. PHP array keys can be coerced: the numeric string '1' is normally the same key as integer 1.\n\nUse === when comparing values whose types matter. With ?? you can provide a fallback for a missing or null key without generating an undefined-index warning. For a large database result, loading every row into an array or Collection still uses memory; a lazy database iteration is a separate concern.",
+    "analogy": "An array is a set of labeled drawers. A filter chooses drawers, a map changes what is inside each drawer, and a reduce counts the contents into one total.",
+    "code": "<?php\ndeclare(strict_types=1);\n$items = [\n    ['name' => 'Notebook', 'price' => 500, 'active' => true],\n    ['name' => 'Pen', 'price' => 100, 'active' => false],\n    ['name' => 'Pencil', 'price' => 50, 'active' => true],\n];\n$active = array_values(array_filter($items, fn (array $item): bool => $item['active']));\n$prices = array_map(fn (array $item): int => $item['price'], $active);\necho array_sum($prices);",
+    "output": "550",
+    "steps": "1. Each product is an associative array; the outer array is a list.\n2. The arrow function reads active and returns a boolean.\n3. array_values restores consecutive list keys.\n4. array_map extracts prices without modifying products.\n5. array_sum totals 500 and 50.",
+    "bad": "Changing the original array while iterating by reference can leave a reference to the last element. Prefer a transformation that returns a new array; if a reference loop is necessary, unset the reference afterward.",
+    "laravel": "collect($items)->where('active', true)->sum('price') expresses a similar transformation using Laravel Collections. Product::where('active', true)->sum('price') performs aggregation in SQL. Choose the database form when the rows are already stored there.",
+    "exercise": "Return a JSON list of active product names. Add a product without an active key and treat it as inactive.",
+    "solution": "Filter with fn ($item) => $item['active'] ?? false, map to name, then apply array_values. Verify JSON is [\"Notebook\",\"Pencil\"], not an object with keys 0 and 2.",
+    "question": "Which function restores sequential numeric keys after filtering?",
+    "options": [
+      "array_values",
+      "array_keys",
+      "sort_keys",
+      "array_merge_recursive"
+    ],
+    "answer": 0,
+    "interview": "When should you use a SQL sum rather than a Collection sum? When only the total is needed from persisted rows; this avoids transferring and hydrating every record.",
+    "takeaway": "Choose transformations by intent. Watch key preservation and move data-heavy aggregation to SQL.",
+    "tags": [
+      "php",
+      "arrays",
+      "closures",
+      "collections"
+    ]
+  },
+  {
+    "module": 0,
+    "title": "Functions, closures, scope, and exceptions",
+    "definition": "A closure is a function value that can capture variables from its surrounding scope. Exceptions represent failures that callers can handle at an appropriate boundary.",
+    "why": "Named functions are reusable operations. Anonymous functions can be passed as arguments; closures import outer local values with use. Arrow functions capture referenced outer variables automatically by value. A captured scalar is a snapshot unless you intentionally capture it by reference.\n\nPass-by-reference using & allows a function to modify the caller's variable. It can hide side effects, so returning a new result is often clearer. Objects are passed as object handles: mutating the referenced object is observable even without &; assigning a different object to a local parameter does not replace the caller's variable.\n\nthrow transfers control to a matching catch. Use finally for cleanup that must happen whether work succeeds or fails. Catch failures you can actually recover from; do not return success after swallowing an exception. Domain exceptions should describe business failure rather than expose infrastructure details to visitors.",
+    "analogy": "A closure carries a small backpack of captured values. An exception is an emergency signal that travels up until a layer knows how to respond.",
+    "code": "<?php\ndeclare(strict_types=1);\n$rate = 2;\n$double = fn (int $value): int => $value * $rate;\n$rate = 3;\nfunction positive(int $value): int\n{\n    if ($value <= 0) {\n        throw new InvalidArgumentException('Amount must be positive.');\n    }\n    return $value;\n}\ntry {\n    echo $double(positive(5));\n} catch (InvalidArgumentException $exception) {\n    echo $exception->getMessage();\n}",
+    "output": "10",
+    "steps": "1. $double captures the value 2.\n2. Reassigning $rate does not change that captured value.\n3. positive checks the domain rule before returning.\n4. 5 passes, and the closure computes 10.\n5. An invalid amount would take the catch branch instead.",
+    "bad": "A catch (Throwable $e) { return true; } hides both expected failures and programming errors. Capturing a loop counter by reference can make multiple closures unexpectedly observe the same final value.",
+    "laravel": "Use exception rendering in bootstrap/app.php to translate a domain failure to a suitable HTTP response. Log infrastructure failures without passwords or tokens. A database transaction rolls back when an exception escapes its callback.",
+    "exercise": "Create a closure factory makeMultiplier(int $factor): Closure. Return independent closures for factors 2 and 3, then test zero and negative arguments to positive.",
+    "solution": "Return fn (int $value): int => $value * $factor. Assert the two closures return 8 and 12 for 4. Assert InvalidArgumentException for zero; do not assert against a live service.",
+    "question": "What does an arrow function normally capture from outer scope?",
+    "options": [
+      "Referenced variables by value",
+      "Every variable by reference",
+      "Only global variables",
+      "No variables"
+    ],
+    "answer": 0,
+    "interview": "Should every exception be caught in a controller? No. Catch where recovery or translation is meaningful; let the framework handle unexpected failures consistently.",
+    "takeaway": "Make side effects visible. Capture deliberately and use exceptions to preserve truthful failure semantics.",
+    "tags": [
+      "php",
+      "functions",
+      "exceptions",
+      "closures"
+    ]
+  },
+  {
+    "module": 0,
+    "title": "Namespaces, Composer, and modern PHP",
+    "definition": "A namespace groups symbol names. Composer resolves package dependencies and generates an autoloader that can locate classes as they are used.",
+    "why": "A use statement imports a name; it does not include or execute that class file. With PSR-4, a namespace prefix maps to a directory. App\\\\Services\\\\InvoiceService maps to app/Services/InvoiceService.php in this project. Case must match even if Windows appears forgiving; production Linux usually has a case-sensitive filesystem.\n\ncomposer.json declares allowed version ranges. composer.lock records exact resolved versions and should be committed for an application. composer install reproduces the lock; composer update resolves new versions. PSR-12 concerns style, not architecture or security. PHPDoc can describe list and generic types beyond native PHP types, but it does not enforce runtime validation.\n\nPHP 8.1 introduced enums and readonly properties; PHP 8.2 supports readonly classes. PHP 8.3-only features are outside this application's PHP 8.2 baseline. Generators yield values lazily instead of allocating a complete result list.",
+    "analogy": "A namespace is a street address. PSR-4 is the delivery map, and Composer's lock file is the exact packing list for a reproducible delivery.",
+    "code": "<?php\ndeclare(strict_types=1);\nnamespace Academy\\Examples;\n\nenum OrderStatus: string\n{\n    case Draft = 'draft';\n    case Paid = 'paid';\n}\n/** @return \\Generator<int, int> */\nfunction invoiceNumbers(int $count): \\Generator\n{\n    for ($i = 1; $i <= $count; $i++) {\n        yield $i;\n    }\n}\necho OrderStatus::Paid->value . ': ';\nforeach (invoiceNumbers(3) as $number) {\n    echo $number;\n}",
+    "output": "paid: 123",
+    "steps": "1. The namespace qualifies the enum and function names.\n2. The backed enum has a stable string value.\n3. The generator suspends after each yield.\n4. foreach resumes it until the loop ends.\n5. No full array of invoice numbers is built.",
+    "bad": "Editing vendor files is overwritten by installation. Running composer update during each production deployment creates unreviewed dependency changes. A generator does not make its external data source lazy if you already loaded all rows.",
+    "laravel": "Eloquent can cast a status attribute to an enum. Use chunkById or lazyById for large mutable database sets, and avoid reading env() outside config files after config caching.",
+    "exercise": "Add a Cancelled enum case. Sketch a PSR-4 mapping for Billing\\\\ classes in src/Billing/. Explain which Composer command a clean CI checkout should run.",
+    "solution": "Add case Cancelled = 'cancelled'. Map \"Billing\\\\\\\\\" to \"src/Billing/\" in autoload.psr-4 and run composer dump-autoload after changing the mapping. CI uses composer install against the committed lock.",
+    "question": "Which file pins exact PHP dependency versions?",
+    "options": [
+      "composer.lock",
+      "composer.json alone",
+      ".env",
+      "package.json"
+    ],
+    "answer": 0,
+    "interview": "Do use statements load files? No; they alias names. Class autoloading happens when a class is needed, using registered autoloaders.",
+    "takeaway": "Keep namespaces, directories, and case aligned. Reproduce dependencies from locks and distinguish language features from framework helpers.",
+    "tags": [
+      "composer",
+      "namespaces",
+      "enums",
+      "generators"
+    ]
+  }
+]

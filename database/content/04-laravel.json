@@ -1,0 +1,125 @@
+[
+  {
+    "module": 1,
+    "title": "Magic methods, cloning, and anonymous classes",
+    "definition": "Magic methods are specially named hooks PHP calls for language operations. Cloning creates a shallow copy; anonymous classes define a class inline without a reusable class name.",
+    "why": "__toString returns a string representation and must not expose secrets. __get and __set handle inaccessible or missing properties, while __call handles inaccessible or missing methods. They can support dynamic APIs but also hide typos and make static analysis less precise. Declaring several same-named methods with different signatures is not supported PHP overloading.\n\nclone initially copies properties shallowly. Nested object properties still refer to the same nested object unless __clone deliberately copies them too. PHP == compares object attributes under its comparison rules; === asks whether two references point to the same object. A domain-specific equals method is usually clearer for values.\n\nAnonymous classes can implement an interface or extend a class and are useful for a one-off adapter or test double. Prefer a named fake when several tests share the behavior. Covariant returns can become more specific and contravariant parameters more general when overriding; neither permits weakening the behavioral contract.",
+    "analogy": "Photocopying a directory copies the printed addresses, not the houses those addresses refer to. A shallow object clone behaves similarly for nested object references.",
+    "code": "<?php\ndeclare(strict_types=1);\nfinal class Address { public function __construct(public string $city) {} }\nfinal class Customer\n{\n    public function __construct(public Address $address) {}\n    public function __clone(): void { $this->address = clone $this->address; }\n    public function __toString(): string { return $this->address->city; }\n}\n$original = new Customer(new Address('Lahore'));\n$copy = clone $original;\n$copy->address->city = 'Karachi';\necho $original . ' / ' . $copy;",
+    "output": "Lahore / Karachi",
+    "steps": "1. Customer holds a nested mutable Address object.\n2. clone invokes __clone after making the shallow copy.\n3. __clone replaces the nested address with another copy.\n4. Mutating the copy's address no longer changes the original.\n5. __toString supplies the two readable city values.",
+    "bad": "Omitting __clone in this example means both customers share one Address. Implementing __get to return null for every unknown name can silently hide a misspelled field. Never stringify passwords or access tokens.",
+    "laravel": "Eloquent uses magic access for attributes and relationships. Accessing an unloaded relationship can issue SQL, which is why this application prevents lazy loading in development. A model's replicate method has persistence-specific behavior; do not assume cloning a model creates a fully independent graph of database rows.",
+    "exercise": "Remove __clone locally and predict the output. Then create an anonymous object implementing Stringable that returns a harmless display label.",
+    "solution": "Without deep-copying Address the output becomes Karachi / Karachi. An anonymous class implements Stringable with public function __toString(): string. Keep confidential fields out of the label and restore the original code after experimenting.",
+    "question": "What does PHP clone copy by default?",
+    "options": [
+      "The object shallowly, retaining references to nested objects",
+      "The entire reachable object graph recursively",
+      "The database row and all relationships",
+      "Only public properties"
+    ],
+    "answer": 0,
+    "interview": "Why can magic methods complicate maintainability? They make valid members and side effects less visible, so typos, unexpected queries, and hidden behavior are easier to miss.",
+    "takeaway": "Use magic hooks sparingly, distinguish copying from persistence, and make object equality and nested mutability explicit.",
+    "tags": [
+      "oop",
+      "magic methods",
+      "clone",
+      "anonymous classes"
+    ]
+  },
+  {
+    "module": 3,
+    "title": "The Laravel request lifecycle and MVC",
+    "definition": "Laravel turns an HTTP request into a response through application bootstrapping, middleware, routing, controller logic, and response handling.",
+    "why": "The web server routes requests to public/index.php. Composer autoloading makes classes available, bootstrap/app.php configures the application, and providers register services before the request is handled. In Laravel 12, middleware configuration normally lives in bootstrap/app.php rather than the older application HTTP Kernel layout.\n\nMiddleware wraps request processing and can also transform the response on the way back. The router chooses a route, resolves bindings, and invokes a controller. A controller should translate HTTP concerns to a use case, then return an Inertia response, view, JSON, redirect, or download. Models handle persistence; domain rules need not live in an enormous Eloquent model.\n\nMVC is a useful organization pattern, not a rule that every line must fit one of three giant files. Service providers compose dependencies. Facades provide a static-looking gateway to container services. Configuration should be read with config(), because production config caching changes when .env is read.",
+    "analogy": "A request is a visitor entering an office: security checks it, reception sends it to the right team, the team performs a task, and reception returns the result.",
+    "code": "// routes/web.php — Laravel 12 snippet\nuse App\\Http\\Controllers\\DashboardController;\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get('/dashboard', DashboardController::class)\n    ->middleware(['auth', 'verified'])\n    ->name('dashboard');\n\n// A controller method returns an Inertia response:\nreturn Inertia\\Inertia::render('Dashboard', ['completed' => 3]);",
+    "output": "Authenticated, verified requests receive the Dashboard Inertia page. Guests are redirected to login. The illustrative count 3 should be replaced with a scoped database query, as this application's dashboard does.",
+    "steps": "1. The route names an endpoint and a controller.\n2. auth establishes a logged-in user.\n3. verified requires the user's verified email when the user implements MustVerifyEmail.\n4. The invokable controller returns page props.\n5. Vue renders those props; the server remains responsible for authorization.",
+    "runnable": false,
+    "bad": "Calling env('PAYMENT_SECRET') inside controllers fails under some cached-config expectations and scatters configuration. Rendering every authenticated request without policies confuses login with permission.",
+    "laravel": "Trace this repository's /lessons/{lesson} route through auth/verified middleware, LessonController, LessonPolicy, Eloquent eager loading, HandleInertiaRequests, and Lessons/Show.vue. Inspect routes with php artisan route:list.",
+    "exercise": "Draw the request lifecycle for marking a lesson complete. Identify the layer that validates completed and the layer that scopes progress to the signed-in user.",
+    "solution": "Browser PUT → web session/CSRF middleware → auth/verified → route binding → LearningActivityController → request validation → user-owned progress relation → database → redirect → Inertia refresh. The user ID is taken from the session, never from the submitted payload.",
+    "question": "Where is application middleware normally configured in this Laravel 12 project?",
+    "options": [
+      "bootstrap/app.php",
+      "A required app/Http/Kernel.php file",
+      "Only composer.json",
+      "The Vue router"
+    ],
+    "answer": 0,
+    "interview": "Is authentication enough to protect an admin action? No. Authentication establishes identity; authorization verifies permission for an action and resource.",
+    "takeaway": "Keep lifecycle concerns explicit, configuration centralized, and authorization on the server.",
+    "tags": [
+      "laravel",
+      "mvc",
+      "middleware",
+      "lifecycle"
+    ]
+  },
+  {
+    "module": 3,
+    "title": "Routing, validation, and thin controllers",
+    "definition": "A route maps an HTTP action to application behavior. Validation checks input shape and constraints; authorization decides whether the user may perform the action.",
+    "why": "GET should retrieve data; POST creates or triggers work; PUT/PATCH update; DELETE removes. Named routes decouple callers from URL spelling. Route model binding resolves an identifier to a model, but binding alone does not authorize access to that model.\n\nRoute groups share prefixes and middleware. Resource controllers provide conventional CRUD actions; invokable controllers suit one action. Constraints and scoped bindings can limit identifiers, while policies still enforce ownership and tenancy. Signed URLs protect against tampering, not every form of access misuse; use expiration and authorization where appropriate.\n\nUse a Form Request for substantial nested input. Its authorize method and policy checks establish permission, while rules validate allowed fields. Use validated() and explicit fillable fields rather than mass-assigning request->all(). Browser validation improves usability but is not a security boundary.",
+    "analogy": "A named route is a labeled doorway. Validation checks the form a visitor carries; authorization checks whether that visitor is allowed through.",
+    "code": "// app/Http/Requests/StoreProductRequest.php\npublic function authorize(): bool\n{\n    return $this->user()->can('create', Product::class);\n}\npublic function rules(): array\n{\n    return [\n        'name' => ['required', 'string', 'max:150'],\n        'price_cents' => ['required', 'integer', 'min:0'],\n    ];\n}\n// ProductController::store\npublic function store(StoreProductRequest $request)\n{\n    $product = Product::create($request->validated());\n    return new ProductResource($product);\n}",
+    "output": "Valid authorized input creates a product and returns its resource. Invalid API input produces a 422 response; unauthorized access produces 403.",
+    "steps": "1. The Form Request runs authorization and validation.\n2. Only validated keys enter the persistence operation.\n3. The model must explicitly allow these fields through $fillable.\n4. A Resource controls response serialization.\n5. This is an illustrative snippet; Product and its policy/resource must be created in the exercise project.",
+    "runnable": false,
+    "bad": "Product::create($request->all()) can accept fields such as owner_id or approval status if the model is too permissive. Hiding an admin button in Vue does not protect the endpoint.",
+    "laravel": "See SaveLessonRequest for nested validation and admin authorization. The admin route group also uses a gate, and LessonPolicy protects lesson editing and previews. These are complementary server boundaries.",
+    "exercise": "Write feature tests for a missing product name, a negative price, a guest, and an authenticated user without create permission. Verify failed writes do not create rows.",
+    "solution": "Use postJson with invalid input and assertUnprocessable plus assertJsonValidationErrors. AssertUnauthorized for a guest API route using auth:sanctum and assertForbidden for a denied policy. Check the database after each failure.",
+    "question": "Does route model binding prove the current user may access the model?",
+    "options": [
+      "No; a policy or equivalent authorization is still needed",
+      "Yes, for any logged-in user",
+      "Yes, when a slug is used",
+      "Only when the route is named"
+    ],
+    "answer": 0,
+    "interview": "When should a controller stay simple CRUD instead of calling a new service? When no meaningful orchestration or reusable domain logic needs a separate boundary. Thin does not mean every CRUD line requires an extra class.",
+    "takeaway": "Use HTTP semantics, named routes, explicit validation, and server-side authorization together.",
+    "tags": [
+      "laravel",
+      "routing",
+      "validation",
+      "controllers"
+    ]
+  },
+  {
+    "module": 3,
+    "title": "Eloquent relationships, migrations, and eager loading",
+    "definition": "Eloquent maps database records to models. Relationships describe how records connect; migrations version schema changes.",
+    "why": "A lesson belongs to one module, and a module has many lessons. A lesson belongs to many tags through a pivot table. One-to-one uses hasOne/belongsTo; polymorphic relationships share a relationship shape across several model types; through relationships traverse an intermediate model. Choose a relationship based on schema and business meaning.\n\nForeign keys protect referential integrity. A unique (user_id, lesson_id) index prevents duplicate progress even if two requests race. Indexes help specific query shapes but add write/storage costs. Restrict deletion when referenced records must survive; cascade only when ownership and retention semantics justify it.\n\nLazy loading $lesson->module inside a loop can produce one query per lesson. with('module') loads related modules in a bounded query count. withCount and withExists can return aggregates without hydrating every related record. A transaction makes related local writes succeed or fail together. Raw SQL must still use bound parameters.",
+    "analogy": "Relationships are documented links between filing cabinets. Eager loading collects the needed folders in batches instead of making a separate trip for every page.",
+    "code": "// Laravel query snippet\n$lessons = Lesson::query()\n    ->with(['module:id,title', 'tags:id,name'])\n    ->withCount('codeExamples')\n    ->where('is_published', true)\n    ->paginate(12);\n\n// Migration snippet\nSchema::table('lesson_progress', function (Blueprint $table) {\n    $table->unique(['user_id', 'lesson_id']);\n});",
+    "output": "A paginated set of lessons with modules, tags, and code-example counts. Query count is bounded by relationship types rather than by the number of lessons; measure exact counts in your environment.",
+    "steps": "1. The primary query retrieves a bounded page.\n2. Eager loading batches module and tag retrieval.\n3. Selected related IDs are retained so Eloquent can match records.\n4. The count is returned as an aggregate attribute.\n5. A unique index guards progress integrity independently of PHP logic.",
+    "runnable": false,
+    "bad": "Calling Lesson::all() for a growing library loads everything. Calling module inside a loop without eager loading adds repeated queries. Dropping a column during a rolling deployment can break old application instances still using it.",
+    "laravel": "This platform normalizes sections, code, exercises, and questions instead of placing the entire course in one giant JSON field. objectives and milestone lists use JSON because they are small structured values, while searchable text and related records remain separate.",
+    "exercise": "Compare lazy and eager loading for 1, 10, and 50 lessons using DB::listen or a local query logger. Record counts, SQL, and timings without inventing results. Add a uniqueness test for duplicate progress.",
+    "solution": "Seed controlled fixtures, run each query in isolation, and count executed queries. Eager counts should remain bounded as rows increase; timings depend on environment. Let a database uniqueness violation prove duplicate protection and use firstOrCreate/upsert in normal flows.",
+    "question": "Which protection handles duplicate progress even under concurrent requests?",
+    "options": [
+      "A database unique constraint on user_id and lesson_id",
+      "Only disabling a frontend button",
+      "Only checking exists before inserting",
+      "A hidden form field"
+    ],
+    "answer": 0,
+    "interview": "Eager loading versus joins? Eager loading usually batches related queries and hydrates models; joins combine rows in SQL and can duplicate parent records. Choose based on needed results and measured behavior.",
+    "takeaway": "Design constraints first, paginate results, and measure relationship queries rather than guessing performance.",
+    "tags": [
+      "laravel",
+      "eloquent",
+      "migrations",
+      "n+1"
+    ]
+  }
+]

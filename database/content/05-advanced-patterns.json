@@ -1,0 +1,155 @@
+[
+  {
+    "module": 4,
+    "title": "Container bindings and provider lifecycles",
+    "definition": "Laravel's service container constructs objects and supplies dependencies. Service providers register bindings and boot application integrations.",
+    "why": "Concrete classes with resolvable dependencies can often be auto-wired. An interface needs an explicit binding because the container cannot infer which implementation you intend. bind typically resolves a new instance; singleton reuses one per container lifetime; scoped reuses one within a supported request/job scope and resets with the lifecycle.\n\nRegister bindings in register. Use boot when interacting with services after provider registration, such as defining gates. Contextual bindings let different consumers receive different implementations; tags group implementations for a deliberate strategy collection. Avoid resolving application services too early during registration.\n\nA singleton with mutable current-user state can leak across requests in Octane or across jobs in a worker. Lifecycle assumptions are part of design correctness. Test the binding and the behavior separately.",
+    "analogy": "The container is a workshop manager that assembles tools according to a provider's instructions, selecting a compatible part when an interface is requested.",
+    "code": "// AppServiceProvider::register — illustrative payment classes\n$this->app->bind(\n    PaymentGatewayInterface::class,\n    StripePaymentGateway::class,\n);\n\n// In a Laravel test:\n$fake = new FakePaymentGateway;\n$this->app->instance(PaymentGatewayInterface::class, $fake);\n$checkout = $this->app->make(CheckoutService::class);",
+    "output": "CheckoutService receives the configured provider in the application and the fake provider in the test. No provider credentials are needed for the fake.",
+    "steps": "1. Register the interface-to-class mapping.\n2. Constructor injection requests the interface.\n3. The test replaces that same interface binding.\n4. Container resolution builds the checkout with the fake.\n5. An assertion should verify the fake's recorded charge and the returned result.",
+    "runnable": false,
+    "bad": "Using singleton for a service that stores a request's user or tenant can retain sensitive state beyond the request. Calling app() everywhere hides construction requirements and makes pure tests harder.",
+    "laravel": "Use config('payments.provider') in a validated configuration-driven resolver. Never let arbitrary request text become a class name. Prefer bind for stateless providers unless instance reuse has a measured purpose; use scoped for intentional lifecycle-bound state.",
+    "exercise": "Write a container test binding a fake gateway, resolve CheckoutService, and assert the fake was used. Explain the lifetime choice for a tenant context.",
+    "solution": "Use instance to supply the fake and assert one recorded amount. A tenant context must reset for each request/job; use the framework's scoped binding and verify reset behavior under the selected long-lived runtime.",
+    "question": "Which binding lifetime is most dangerous for mutable per-user state in a long-lived worker?",
+    "options": [
+      "Singleton",
+      "A newly constructed value object",
+      "A scoped binding with verified resets",
+      "A stateless transient binding"
+    ],
+    "answer": 0,
+    "interview": "register versus boot? Register describes container bindings; boot runs after providers are registered and can configure integrations using other services.",
+    "takeaway": "Make implementation selection and lifetime explicit. Avoid retaining request state in reusable singletons.",
+    "tags": [
+      "laravel",
+      "container",
+      "providers",
+      "scoped"
+    ]
+  },
+  {
+    "module": 4,
+    "title": "Queued work, retries, and after-commit dispatch",
+    "definition": "A queue moves suitable work out of the HTTP request. Workers process jobs later, and jobs must tolerate retry and partial failure.",
+    "why": "Dispatching a job returns control without guaranteeing successful completion. A worker may crash after an external side effect but before acknowledging the job, so the same job may run again. Idempotency means repeating an operation produces the intended outcome without duplicating the business effect.\n\nSet retry attempts, backoff, timeout, and failure monitoring deliberately. Timeouts should be shorter than the queue connection's retry_after where that setting applies, so another worker does not start the same job while the first is still working. Do not serialize secrets or giant result sets into job payloads; pass stable IDs and re-check relevant state.\n\nDispatch after a database commit when the worker needs newly persisted records. Batch large recipients with chunkById rather than loading every user. afterCommit prevents a worker observing uncommitted records; an outbox pattern addresses the separate risk of a process dying between commit and dispatch.",
+    "analogy": "A kitchen ticket queue lets the waiter continue serving. If a ticket is reprinted, the kitchen needs a way to avoid serving the same paid order twice.",
+    "code": "// Inside a transaction, after the order is persisted:\nSendOrderConfirmation::dispatch($order->id)->afterCommit();\n\n// Job design excerpt:\npublic int $tries = 3;\npublic int $timeout = 45;\npublic function backoff(): array { return [10, 60, 180]; }\npublic function handle(OrderConfirmationSender $sender): void\n{\n    $sender->sendOnce($this->orderId);\n}",
+    "output": "The job becomes eligible after commit. Delivery occurs only when a configured worker processes it. sendOnce must implement real deduplication; its name alone provides no guarantee.",
+    "steps": "1. Persist local order state transactionally.\n2. Register dispatch after commit.\n3. The worker resolves the sender dependency.\n4. sendOnce uses a durable idempotency/delivery record and provider support where available.\n5. Failures are retried under a bounded policy and ultimately monitored.",
+    "runnable": false,
+    "bad": "Retrying a job that blindly charges or sends again can duplicate side effects. Loading User::all() to email thousands of users can exhaust memory. Marking delivery complete before a provider succeeds loses notifications.",
+    "laravel": "Use Notification::fake or Queue::fake for dispatch assertions and separate tests for job behavior. Run php artisan queue:work with a process supervisor in production. Restart workers during deployment so they load new code.",
+    "exercise": "Design a bulk email command using chunkById(500) to dispatch bounded jobs. Write tests for dispatch, retry safety, and a failed provider call.",
+    "solution": "Iterate users by stable ID and dispatch one recipient or bounded batches. Store delivery intent/attempt status and use provider idempotency when supported. Test a repeated handle call without a duplicate recorded send, plus a failure that remains retryable.",
+    "question": "Why dispatch after commit?",
+    "options": [
+      "To avoid workers reading uncommitted or rolled-back records",
+      "To guarantee exactly-once external delivery",
+      "To eliminate the need for workers",
+      "To make every job synchronous"
+    ],
+    "answer": 0,
+    "interview": "Do queues provide exactly-once execution? Generally no. Design for retries and at-least-once processing, with idempotent effects and durable recovery.",
+    "takeaway": "Queueing changes timing and failure semantics. Design retries, deduplication, and monitoring as part of the feature.",
+    "tags": [
+      "laravel",
+      "queues",
+      "jobs",
+      "idempotency"
+    ]
+  },
+  {
+    "module": 4,
+    "title": "Caching, invalidation, and atomic locks",
+    "definition": "A cache stores a reusable result to avoid repeated work. Correctness depends on keys, lifetime, invalidation, and the scope of the cached data.",
+    "why": "Cache::remember retrieves a value or computes and stores it for a TTL. Include every dimension that changes the result in the key: tenant, user permission scope, locale, query filters, and version as relevant. A cache key is part of your data-isolation design.\n\nInvalidation removes or replaces stale entries after authoritative data changes. Perform invalidation after commit so a concurrent read does not repopulate the cache with data that will be rolled back. A cache is not a substitute for a database uniqueness constraint or authorization.\n\nA stampede occurs when many requests recompute the same expired value. An atomic lock can coordinate one rebuild when the selected driver supports the needed cross-process behavior. Use bounded lock acquisition and expiry, and verify the driver works across all instances. Cache tags are not supported by every driver.",
+    "analogy": "A cache is a photocopy of a frequently requested report. The label must say whose report and which version; a fast outdated copy can still be wrong.",
+    "code": "// Laravel snippet: tenant identity must come from trusted context.\n$key = 'tenant:'.$tenantId.':dashboard:v1';\n$summary = Cache::remember($key, now()->addMinutes(5), function () use ($tenantId) {\n    return Order::where('tenant_id', $tenantId)\n        ->selectRaw('COUNT(*) AS orders, SUM(total_cents) AS cents')\n        ->first()->toArray();\n});\n// After a committed write:\nCache::forget($key);",
+    "output": "Repeated reads can reuse the tenant-scoped aggregate until expiry or invalidation. Exact hit rate and latency require measurement.",
+    "steps": "1. A trusted tenant ID becomes part of the key.\n2. SQL returns aggregates instead of hydrating every order.\n3. remember stores the result for a bounded interval.\n4. A committed change invalidates the same key.\n5. Authorization is still checked before any cached data is returned.",
+    "runnable": false,
+    "bad": "Caching 'dashboard' under one global key can show one tenant's results to another. Flushing the whole shared cache after every update can delete unrelated app state and destroy useful hit rates.",
+    "laravel": "Start with the configured database cache for development. Choose Redis when shared low-latency cache/locks are operationally justified. Validate lock behavior, cache prefixes, and deployment topology rather than assuming local-driver semantics transfer.",
+    "exercise": "Write a test that two tenants get different cached totals. Update one tenant, invalidate only its key, and verify the other result remains cached.",
+    "solution": "Use two keys containing trusted tenant IDs. Count computation callbacks to prove hits and targeted invalidation. Add an authorization test before cache access; distinct keys alone do not authorize a caller.",
+    "question": "Which data belongs in a cache key when caching tenant-specific reports?",
+    "options": [
+      "The trusted tenant ID and relevant result dimensions",
+      "Only the word report",
+      "A random ID on every read",
+      "The database password"
+    ],
+    "answer": 0,
+    "interview": "Why invalidate after commit? Invalidating too early can allow another request to rebuild from uncommitted or old state and cache a stale result.",
+    "takeaway": "Design caching around isolation and freshness first, then measure its performance benefit.",
+    "tags": [
+      "laravel",
+      "cache",
+      "redis",
+      "locks"
+    ]
+  },
+  {
+    "module": 5,
+    "title": "Strategy, Factory, and Adapter patterns",
+    "definition": "Strategy varies an algorithm behind a contract. Factory centralizes construction. Adapter translates an incompatible external API into the contract your application needs.",
+    "why": "These patterns solve related but different problems. A Checkout uses a payment strategy. A factory chooses and constructs an allowed strategy from configuration. An adapter wraps a provider SDK whose API does not match your PaymentProcessor contract.\n\nRelationships: Checkout → PaymentProcessor ← ProviderAdapter → VendorSdk. A factory supplies a PaymentProcessor; it does not need to own checkout business rules. An abstract factory creates a related family of products, and is useful only when the family relationship matters.\n\nAvoid a factory when new plus constructor injection is already clear. Avoid a giant factory that performs business actions. An adapter should translate provider-specific responses and failures into your contract's documented semantics, including units and idempotency behavior.",
+    "analogy": "A travel plug adapter changes the connector, a factory chooses the right adapter, and a strategy determines which travel route you take.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface PaymentProcessor { public function pay(int $cents): string; }\nfinal class VendorSdk { public function simulateCharge(int $amount): string { return 'vendor-sim-' . $amount; } }\nfinal class ProviderAdapter implements PaymentProcessor\n{\n    public function __construct(private VendorSdk $sdk) {}\n    public function pay(int $cents): string { return $this->sdk->simulateCharge($cents); }\n}\nfinal class ProcessorFactory\n{\n    public function make(string $driver): PaymentProcessor\n    {\n        return match ($driver) {\n            'simulation' => new ProviderAdapter(new VendorSdk),\n            default => throw new InvalidArgumentException('Unknown driver.'),\n        };\n    }\n}\necho (new ProcessorFactory)->make('simulation')->pay(700);",
+    "output": "vendor-sim-700",
+    "steps": "1. The application contract uses pay in cents.\n2. VendorSdk exposes a different method name.\n3. ProviderAdapter translates the call.\n4. The factory uses an explicit allowlist, not arbitrary class loading.\n5. Everything is simulated; no SDK or credentials are installed.",
+    "bad": "Using new $request->driver allows untrusted input to choose classes. Wrapping an SDK without normalizing errors can leak provider details and create inconsistent contracts.",
+    "laravel": "A service provider can act as the composition root instead of a custom factory. Contextual bindings select strategies for different clients. Test adapter mapping with a fake SDK and test factory rejection of unknown drivers.",
+    "exercise": "Add a second simulation adapter and factory option. Keep checkout unchanged. Test unknown driver rejection and exact amount forwarding.",
+    "solution": "Implement the same contract, register an explicit factory branch, and use a recording fake for the vendor call. Consider deleting the factory if only a single static binding is ever needed.",
+    "question": "Which pattern translates a vendor API into your existing contract?",
+    "options": [
+      "Adapter",
+      "Singleton",
+      "Observer",
+      "Value Object"
+    ],
+    "answer": 0,
+    "interview": "Factory versus Strategy? Factory is about creating/selecting objects; Strategy is about substituting behavior through a common contract.",
+    "takeaway": "Name the problem before applying the pattern. Keep construction, translation, and policy separate.",
+    "tags": [
+      "patterns",
+      "factory",
+      "strategy",
+      "adapter"
+    ]
+  },
+  {
+    "module": 5,
+    "title": "Decorator, Observer, and state transitions",
+    "definition": "A decorator wraps the same contract to add behavior. An observer reacts to an occurrence. A state model controls which transitions are allowed.",
+    "why": "A logging decorator can implement the gateway interface and delegate to another gateway, preserving its contract while recording an operation. Order of wrappers matters: logging around retry differs from retry around logging. Shared state and exception semantics must remain clear.\n\nObserver-style events decouple a publisher from reactions. Laravel events/listeners can send notifications or update projections, but do not hide essential invariants in unpredictable asynchronous listeners. Persist the core order transition before notifying other systems.\n\nState transitions prevent invalid sequences such as refunding a draft order. A backed enum plus explicit transition methods can be enough before a full State pattern with one class per state is warranted. A specification encapsulates a reusable business predicate; it should have a meaningful domain purpose rather than wrap every if.",
+    "analogy": "A decorated parcel still fits the same delivery contract. An observer gets a delivery notification; a state machine prevents claiming it was delivered before it was shipped.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface Exporter { public function export(string $data): string; }\nfinal class PlainExporter implements Exporter\n{\n    public function export(string $data): string { return $data; }\n}\nfinal class TimestampedExporter implements Exporter\n{\n    public function __construct(private Exporter $inner, private string $stamp) {}\n    public function export(string $data): string { return $this->stamp . ': ' . $this->inner->export($data); }\n}\necho (new TimestampedExporter(new PlainExporter, '2026-10-14'))->export('Report');",
+    "output": "2026-10-14: Report",
+    "steps": "1. Both classes expose the same export method.\n2. The decorator receives another Exporter.\n3. It delegates the core operation and adds a prefix.\n4. Injecting the timestamp makes the example deterministic.\n5. Wrapping another decorator would form a composable chain.",
+    "bad": "A decorator that unexpectedly changes return type or swallows failures violates the wrapped contract. Using an async event listener to enforce an invariant can allow invalid state before the listener runs.",
+    "laravel": "Use events for reactions such as OrderPlaced → SendConfirmation. Use policies and domain methods for required decisions before mutation. Chain of Responsibility resembles a middleware pipeline; each step decides whether and how to delegate.",
+    "exercise": "Add an UppercaseExporter decorator and compare wrapping orders. Design an OrderStatus transition table for draft → paid → shipped and a separate refund path.",
+    "solution": "Delegate then strtoupper the returned value. Test both wrapper orders with a prefix containing letters. Represent allowed status transitions explicitly, and test that draft → shipped fails without changing state.",
+    "question": "What contract does a decorator normally expose?",
+    "options": [
+      "The same contract as the object it wraps",
+      "Only static methods",
+      "A completely unrelated interface",
+      "The database migration API"
+    ],
+    "answer": 0,
+    "interview": "When should an event replace a direct call? When reactions can be decoupled under explicit timing/failure semantics. Core invariants and required synchronous outcomes often deserve a direct dependency.",
+    "takeaway": "Use wrappers for composable behavior, events for reactions, and explicit rules for state transitions.",
+    "tags": [
+      "patterns",
+      "decorator",
+      "observer",
+      "state"
+    ]
+  }
+]

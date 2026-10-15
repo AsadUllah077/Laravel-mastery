@@ -1,0 +1,301 @@
+[
+  {
+    "module": 1,
+    "title": "Classes, objects, and constructors",
+    "definition": "A class defines the state and behavior of a kind of object. An object is a particular instance with its own identity and current state.",
+    "why": "Properties hold state; methods expose behavior. new constructs an object and invokes its constructor. $this refers to the current instance inside an instance method. A type-hinted object parameter makes the expected collaborator explicit.\n\nConstructor property promotion declares and initializes a property in one place. Named arguments can improve readability, but parameter names then become part of how callers use your API. Avoid constructors that perform network requests or database writes; they make object creation surprising and tests slow.\n\nA destructor may release a resource, but the timing of destruction is not a reliable business workflow. Do not send invoices, commit transactions, or persist orders from __destruct. Explicit methods and finally blocks make intent visible.",
+    "analogy": "A class is a recipe; each prepared meal is an object. The recipe is shared, while each meal has its own ingredients and current temperature.",
+    "code": "<?php\ndeclare(strict_types=1);\nfinal class Product\n{\n    public function __construct(public readonly string $name, private int $priceCents) {}\n    public function price(): int { return $this->priceCents; }\n}\nfunction describe(Product $product): string\n{\n    return $product->name . ': ' . $product->price();\n}\n$book = new Product(name: 'PHP Handbook', priceCents: 2400);\necho describe($book);",
+    "output": "PHP Handbook: 2400",
+    "steps": "1. Product declares two promoted properties.\n2. name is readable and readonly; priceCents is private.\n3. price exposes a query without exposing arbitrary writes.\n4. new creates one Product; named arguments document units.\n5. describe accepts a Product object and returns its description.",
+    "bad": "A Product constructor that calls a payment API creates an external side effect before a caller asks to pay. A property named price without units invites cents/dollars mistakes.",
+    "laravel": "An Eloquent model is a framework-managed entity with persistence behavior. Avoid replacing its constructor signature with required domain arguments. Use Eloquent casts/factories or a separate value object for domain data.",
+    "exercise": "Add a second product and prove each retains its own price. Add constructor validation that rejects a negative price.",
+    "solution": "Instantiate new Product('Pen', 100) separately. Use an if guard in the constructor and throw InvalidArgumentException for negative cents. Assert that constructing the Pen does not change the book.",
+    "question": "What does $this refer to in an instance method?",
+    "options": [
+      "The current object instance",
+      "The parent class definition",
+      "A global singleton",
+      "The last object created anywhere"
+    ],
+    "answer": 0,
+    "interview": "Class versus object? A class defines a type and its behavior; an object is an instance. Two objects of the same class can hold different state.",
+    "takeaway": "Model state and behavior together, keep object creation predictable, and make units visible.",
+    "tags": [
+      "oop",
+      "classes",
+      "constructors"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Access modifiers and encapsulation",
+    "definition": "Encapsulation keeps representation behind a deliberate public API so the object can enforce its own rules. Visibility controls who can access each member.",
+    "why": "public members can be accessed by any caller. protected members can be accessed by the class and its descendants. private members belong to the declaring class. A private property alone does not guarantee encapsulation: an unrestricted setter can still permit invalid state.\n\nChoose commands that describe business actions, such as withdraw, instead of exposing setBalance. Put invariant checks before state changes. A failed operation should leave the object in a valid state.\n\nA public readonly property can be a good choice for transparent data. PHP 8.2 readonly classes make all instance properties readonly and disallow dynamic properties. Readonly prevents reassigning an object property; it does not recursively freeze an object referenced by that property. Getters and setters that only repeat public field access add little value.",
+    "analogy": "An ATM exposes withdraw and balance checks, not a control that lets customers overwrite the bank's ledger.",
+    "code": "<?php\ndeclare(strict_types=1);\nfinal class BankAccount\n{\n    public function __construct(private int $balanceCents)\n    {\n        if ($balanceCents < 0) throw new InvalidArgumentException('Negative opening balance.');\n    }\n    public function withdraw(int $cents): void\n    {\n        if ($cents <= 0 || $cents > $this->balanceCents) {\n            throw new DomainException('Invalid withdrawal.');\n        }\n        $this->balanceCents -= $cents;\n    }\n    public function balance(): int { return $this->balanceCents; }\n}\n$account = new BankAccount(1000);\n$account->withdraw(250);\necho $account->balance();",
+    "output": "750",
+    "steps": "1. Construction establishes a nonnegative opening balance.\n2. The balance is private, so callers cannot bypass withdraw.\n3. withdraw validates both positivity and available funds before mutation.\n4. The valid operation subtracts 250.\n5. balance exposes a read-only observation.",
+    "bad": "public int $balanceCents allows $account->balanceCents = -999. A public setBalance(int $value) without validation has the same weakness. Do not assume protected state cannot be misused by subclasses.",
+    "laravel": "For persisted balances, object-level validation is not enough under concurrent requests. Use a transaction and lockForUpdate on the relevant account row, plus authorization and a ledger record. Keep monetary changes auditable.",
+    "exercise": "Attempt a withdrawal of 2000 and assert that the exception leaves the balance unchanged at 750. Add a deposit method that rejects zero and negative amounts.",
+    "solution": "Capture the old balance, assert DomainException, then assert the same balance. The deposit method checks cents > 0 before adding. A database integration test is needed for concurrent persisted account updates.",
+    "question": "Which API best protects an account invariant?",
+    "options": [
+      "withdraw(int $cents) with validation before mutation",
+      "A public writable balance",
+      "A setter that accepts any integer",
+      "A destructor that repairs negative balances"
+    ],
+    "answer": 0,
+    "interview": "Is encapsulation the same as private visibility? No. Visibility is a tool; encapsulation also requires an API that preserves business invariants.",
+    "takeaway": "Protect meaningful rules through behavior, and distinguish object validity from database concurrency.",
+    "tags": [
+      "oop",
+      "encapsulation",
+      "readonly",
+      "visibility"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Inheritance, overriding, and composition",
+    "definition": "Inheritance defines an is-a relationship between a child and a parent. Composition defines a has-a relationship between collaborating objects.",
+    "why": "extends inherits accessible behavior. A child can override a method while preserving its compatible signature and behavioral promises. parent:: calls the parent's implementation. If a child defines its own constructor, it must call parent::__construct when parent initialization is required.\n\nOverriding cannot narrow a public method's visibility. A child may accept a broader parameter type (contravariance) and return a more specific type (covariance), subject to PHP's compatibility rules. Signature compatibility alone cannot prove correct behavior.\n\nDeep inheritance couples descendants to protected internals and makes changes ripple through a hierarchy. Prefer composition when a behavior varies independently: a checkout has a gateway, not is a gateway. A final class or method closes an inheritance extension point intentionally. It does not make an object immutable.",
+    "analogy": "A delivery van is a vehicle, but it has a navigation system. Changing navigation should not require a new vehicle ancestry.",
+    "code": "<?php\ndeclare(strict_types=1);\nabstract class Gateway\n{\n    public function label(): string { return 'Simulation'; }\n    abstract public function pay(int $cents): string;\n}\nfinal class CardGateway extends Gateway\n{\n    public function label(): string { return parent::label() . ' card'; }\n    public function pay(int $cents): string { return $this->label() . ': ' . $cents; }\n}\nfinal class Checkout\n{\n    public function __construct(private Gateway $gateway) {}\n    public function total(int $cents): string { return $this->gateway->pay($cents); }\n}\necho (new Checkout(new CardGateway))->total(500);",
+    "output": "Simulation card: 500",
+    "steps": "1. Gateway defines a common abstraction and a shared label.\n2. CardGateway overrides label and reuses the parent label.\n3. Its pay implementation preserves the parent's public signature.\n4. Checkout receives a gateway rather than inheriting from it.\n5. The example produces a simulation string; no money is moved.",
+    "bad": "Making Checkout extend CardGateway ties business orchestration to one provider. Adding a subclass that throws 'not supported' for a promised operation may violate substitutability even though PHP accepts its signature.",
+    "laravel": "Controllers may extend Laravel's base controller, while their business collaborators should usually be injected. Configure a provider binding rather than choosing a gateway through a long if/elseif tree in every controller.",
+    "exercise": "Implement WalletGateway with the same pay contract and switch Checkout to use it. Identify which line must change.",
+    "solution": "Add a final WalletGateway extends Gateway implementing pay. Change only construction to new Checkout(new WalletGateway). The body of Checkout::total stays unchanged.",
+    "question": "Which relationship best describes Checkout and its payment gateway?",
+    "options": [
+      "Checkout has a gateway: composition",
+      "Checkout is a gateway: inheritance",
+      "A gateway must inherit Checkout",
+      "They must share static global state"
+    ],
+    "answer": 0,
+    "interview": "When is inheritance appropriate? When descendants truly honor the parent's behavioral contract and benefit from stable shared behavior. Otherwise collaborating objects are often easier to evolve.",
+    "takeaway": "Use inheritance for substitutable types and composition for independently changing behavior.",
+    "tags": [
+      "oop",
+      "inheritance",
+      "composition",
+      "covariance"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Abstract classes and template methods",
+    "definition": "An abstract class cannot be instantiated directly. It can combine shared concrete behavior with abstract methods that subclasses must implement.",
+    "why": "abstract marks a class or method as incomplete. An abstract method has no body, and a concrete descendant must implement it with a compatible signature. Abstract classes can have constructors and instance properties. A child that supplies its own constructor must preserve necessary parent initialization.\n\nThe template method pattern puts an algorithm's stable sequence in a shared method and delegates variable steps to protected abstract hooks. Mark the template method final when bypassing its checks would break the contract. This trades flexibility for enforced sequencing.\n\nAn interface describes a capability without a common instance implementation in PHP 8.2. An abstract class is useful when there is meaningful shared state or behavior and a genuine family relationship. PHP supports only one class parent, so inheriting merely to share a tiny helper consumes a significant design choice.",
+    "analogy": "A café's ordering procedure always checks the order, prepares a drink, and serves it. The preparation step differs between coffee and tea.",
+    "code": "<?php\ndeclare(strict_types=1);\nabstract class PaymentGateway\n{\n    final public function pay(int $cents): string\n    {\n        if ($cents <= 0) throw new InvalidArgumentException('Positive amount required.');\n        return $this->charge($cents);\n    }\n    abstract protected function charge(int $cents): string;\n}\nfinal class StripeLikeGateway extends PaymentGateway\n{\n    protected function charge(int $cents): string { return 'Stripe simulation ' . $cents; }\n}\nfinal class PayPalLikeGateway extends PaymentGateway\n{\n    protected function charge(int $cents): string { return 'PayPal simulation ' . $cents; }\n}\necho (new PayPalLikeGateway)->pay(1200);",
+    "output": "PayPal simulation 1200",
+    "steps": "1. PaymentGateway cannot be constructed directly.\n2. final pay enforces a positive amount for every provider.\n3. charge is a protected hook and is not callable by clients.\n4. PayPalLikeGateway supplies only the varying step.\n5. The returned text is simulated provider behavior, not a real integration.",
+    "bad": "Duplicating the amount check in every provider makes it easy for one to omit it. An abstract class containing unrelated methods becomes an inheritance dumping ground and can be harder to test.",
+    "laravel": "Bind the common gateway abstraction in a service provider. For unrelated provider SDKs, an interface plus injected validator can be more flexible than a shared parent. Never resolve payment credentials from frontend JavaScript.",
+    "exercise": "Add a bank-transfer simulation and prove pay(0) fails for all three implementations.",
+    "solution": "Implement only charge in a new final subclass. Use a PHPUnit data provider over the three gateway instances, expecting InvalidArgumentException for zero. Keep the invariant in final pay.",
+    "question": "Why make the template pay method final?",
+    "options": [
+      "To prevent subclasses bypassing its shared validation sequence",
+      "To permit multiple class inheritance",
+      "To turn it into a static method",
+      "To allow instantiating the abstract class"
+    ],
+    "answer": 0,
+    "interview": "Can an abstract class have a constructor and concrete methods? Yes. It can initialize shared state and implement behavior while leaving required steps abstract.",
+    "takeaway": "Use shared implementation only when it defines a stable family of behavior. Keep abstract hooks narrow.",
+    "tags": [
+      "oop",
+      "abstract",
+      "template method",
+      "payments"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Interfaces, contracts, and dependency injection",
+    "definition": "An interface declares a capability that implementations promise to provide. Dependency injection supplies a collaborator from outside an object.",
+    "why": "interface and implements separate the expected capability from a particular implementation. A class can implement several interfaces, and an interface can extend other interfaces. In PHP 8.2, interface methods are public contracts; they do not hold normal instance property state.\n\nType-hinting PaymentGatewayInterface lets CheckoutService use different gateways. Constructor injection makes that dependency visible at construction time. Dependency inversion is the architectural choice to make high-level policy depend on an abstraction; dependency injection is the mechanism used to supply an instance. You can inject a concrete class without applying dependency inversion.\n\nCreate an interface when it represents a meaningful contract or substitution point. An interface for every small class can double navigation effort without buying useful flexibility. Define success, failure, units, and exception behavior as part of the contract, not only a method signature.",
+    "analogy": "A wall socket defines a contract. Appliances use that contract without knowing which power station produced the electricity.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface PaymentGatewayInterface { public function pay(int $cents): string; }\nfinal class StripePaymentGateway implements PaymentGatewayInterface\n{\n    public function pay(int $cents): string { return 'Stripe simulation: ' . $cents; }\n}\nfinal class PayPalPaymentGateway implements PaymentGatewayInterface\n{\n    public function pay(int $cents): string { return 'PayPal simulation: ' . $cents; }\n}\nfinal class CheckoutService\n{\n    public function __construct(private PaymentGatewayInterface $gateway) {}\n    public function checkout(int $cents): string\n    {\n        if ($cents <= 0) throw new InvalidArgumentException('Positive amount required.');\n        return $this->gateway->pay($cents);\n    }\n}\necho (new CheckoutService(new StripePaymentGateway))->checkout(900);",
+    "output": "Stripe simulation: 900",
+    "steps": "1. The interface describes the dependency CheckoutService needs.\n2. Two final classes implement the same capability.\n3. The constructor receives the chosen implementation.\n4. checkout validates its business precondition and delegates.\n5. Switching to PayPal does not alter checkout's algorithm.",
+    "bad": "new StripePaymentGateway inside CheckoutService hides provider selection in business code. A gateway contract that returns null on some failures and throws on others needs clearer documented semantics.",
+    "laravel": "In AppServiceProvider::register use $this->app->bind(PaymentGatewayInterface::class, StripePaymentGateway::class). Laravel can then resolve CheckoutService automatically. In a test bind a fake instance with $this->app->instance(...). Bind stateless dependencies normally; avoid a singleton that retains request-specific user state.",
+    "exercise": "Implement a FakeGateway that records amounts in an array. Inject it and verify checkout(900) records exactly one charge without HTTP calls.",
+    "solution": "Give the fake a public array $charges = []; pay appends the amount and returns 'fake'. AssertSame([900], $fake->charges). The fake is a testing implementation of the same contract.",
+    "question": "What makes CheckoutService independent of a specific payment provider?",
+    "options": [
+      "Depending on the gateway interface",
+      "Constructing Stripe inside checkout",
+      "Using a global provider variable",
+      "Catching every exception and returning success"
+    ],
+    "answer": 0,
+    "interview": "DI versus DIP? DI supplies dependencies; DIP arranges source dependencies around abstractions so infrastructure implements contracts needed by policy.",
+    "takeaway": "Make dependencies and failure semantics explicit. Use contracts at meaningful variation points.",
+    "tags": [
+      "oop",
+      "interfaces",
+      "dependency injection",
+      "service container"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Traits and method conflict resolution",
+    "definition": "A trait reuses method implementations across classes without creating an is-a relationship. Its methods are composed into the class that uses it.",
+    "why": "Declare trait and add it with use inside a class. A class can use several traits. If two traits supply the same method, resolve the conflict explicitly with insteadof. Use as to create an alias or change imported visibility; aliasing does not remove the original method.\n\nA method declared directly in the class takes precedence over a trait method, and a trait method takes precedence over an inherited method. Trait properties must be compatible with any same-named property on the consuming class. Trait constructors can collide or make initialization surprising; prefer an explicit initialization method or ordinary injected collaborator for business services.\n\nTraits are suitable for cohesive reusable mechanics. They can hide dependencies on $this properties and are hard to substitute as runtime collaborators. Currency formatting with locale/config dependencies usually fits an injected formatter more naturally than a trait with global reads.",
+    "analogy": "A trait is a reusable page of instructions copied into several manuals. It is not a separate worker you can swap at runtime.",
+    "code": "<?php\ndeclare(strict_types=1);\ntrait LogsActivity { public function label(): string { return 'activity'; } }\ntrait FormatsCurrency { public function label(): string { return 'currency'; } }\nfinal class Invoice\n{\n    use LogsActivity, FormatsCurrency {\n        LogsActivity::label insteadof FormatsCurrency;\n        FormatsCurrency::label as private currencyLabel;\n    }\n    public function summary(): string { return $this->label() . '/' . $this->currencyLabel(); }\n}\necho (new Invoice)->summary();",
+    "output": "activity/currency",
+    "steps": "1. Both traits define label, which would otherwise conflict.\n2. insteadof selects LogsActivity's label for the original name.\n3. as creates a private alias for the other implementation.\n4. summary can call both inside the class.\n5. External callers cannot call the private alias.",
+    "bad": "A HasEverything trait with payment, logging, email, and report methods hides unrelated responsibilities. Assuming trait use invokes a constructor for every trait is incorrect; PHP has one effective constructor method.",
+    "laravel": "Laravel's HasFactory and SoftDeletes are examples of framework traits with specific conventions. A HasUuid concern can participate in model booting, but inspect framework lifecycle conventions and do not reuse it blindly in a plain PHP object.",
+    "exercise": "Add a third trait with an unrelated method. Then refactor FormatsCurrency into a separate formatter class and inject it into Invoice. Compare test setup.",
+    "solution": "The trait's unrelated method can coexist without conflict. With composition, Invoice receives a formatter and delegates formatting; a test can supply a fake formatter without composing another trait.",
+    "question": "What does as do when importing a trait method?",
+    "options": [
+      "Creates an alias or changes visibility",
+      "Deletes the original implementation",
+      "Makes the trait a parent class",
+      "Calls all trait constructors"
+    ],
+    "answer": 0,
+    "interview": "Traits versus composition? Traits reuse implementation at class definition time. Composition delegates to object collaborators that can be configured and replaced.",
+    "takeaway": "Keep traits cohesive and free of surprising state. Resolve conflicts explicitly and inject business collaborators.",
+    "tags": [
+      "oop",
+      "traits",
+      "insteadof",
+      "composition"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Polymorphism and dynamic dispatch",
+    "definition": "Polymorphism lets callers use one contract while the runtime selects behavior from the actual implementing object.",
+    "why": "PHP dispatches instance method calls according to the object's runtime class. Interfaces and abstract classes provide common types, while overriding supplies varied implementations. PHP does not offer Java-style method overloading by declaring several methods with the same name and different parameter lists.\n\nA union type accepts several types but does not itself provide a shared behavior. An interface gives callers a method they can rely on. A heterogeneous list of exporters can be processed uniformly when all implement the Exporter contract.\n\nGood polymorphism removes provider-specific branches from the caller. It still requires a selection point, such as configuration or a strategy resolver. Keep that decision near application composition instead of distributing instanceof checks throughout business logic.",
+    "analogy": "A single 'print' command can work with several printer models because each model knows how to fulfill the printing contract.",
+    "code": "<?php\ndeclare(strict_types=1);\ninterface Notifier { public function message(string $text): string; }\nfinal class EmailNotifier implements Notifier\n{\n    public function message(string $text): string { return 'Email simulation: ' . $text; }\n}\nfinal class SmsNotifier implements Notifier\n{\n    public function message(string $text): string { return 'SMS simulation: ' . $text; }\n}\nforeach ([new EmailNotifier, new SmsNotifier] as $channel) {\n    echo $channel->message('Order ready') . \"\\n\";\n}",
+    "output": "Email simulation: Order ready\nSMS simulation: Order ready\n",
+    "steps": "1. Notifier defines one small capability.\n2. Each channel supplies a compatible implementation.\n3. The same loop calls message on both objects.\n4. The actual class determines the returned text.\n5. No email or SMS is sent; these are simulations.",
+    "bad": "A caller that checks instanceof EmailNotifier, then SmsNotifier, duplicates knowledge of every subtype. Adding a new channel would require editing every branch.",
+    "laravel": "Notification channels and queue job handlers use runtime object behavior. For reports, bind or tag exporter implementations in a provider and inject the ones a use case needs. A collection of strategies does not require static global registries.",
+    "exercise": "Add a PushNotifier without changing the foreach body. Write a contract test that each channel includes the supplied message.",
+    "solution": "Implement Notifier and add the instance to the list. Use a data provider that calls message('ready') for every implementation and asserts the result contains ready. Specify failure behavior in the contract before integrating external services.",
+    "question": "When is the concrete message implementation chosen in this PHP example?",
+    "options": [
+      "At runtime from the actual object",
+      "At Composer installation time",
+      "By the variable name",
+      "Only through __call"
+    ],
+    "answer": 0,
+    "interview": "Is PHP method overloading the same as overriding? No. Overriding replaces inherited behavior. PHP magic 'overloading' refers to dynamic handling of inaccessible members, not repeated signature declarations.",
+    "takeaway": "Design around stable capabilities so new implementations change composition, not every caller.",
+    "tags": [
+      "oop",
+      "polymorphism",
+      "dynamic dispatch",
+      "notifications"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Composition, delegation, and application services",
+    "definition": "Composition builds behavior by combining collaborating objects. Delegation asks a collaborator to perform part of an operation.",
+    "why": "An order workflow may need tax calculation, payment, and notification. These are independently changing responsibilities. Constructor injection gives the service explicit collaborators without forcing them into an inheritance tree.\n\nAn application service coordinates a use case; domain objects protect business rules. Keep orchestration readable and avoid a giant service that owns every action in the system. Not every dependency needs an interface: a pure tax calculator with one implementation may be injected directly.\n\nA database transaction can atomically persist local writes. It cannot roll back an external charge or an email already delivered. For external side effects consider idempotency keys, after-commit dispatch, an outbox, and compensating actions. The correct boundary depends on business failure semantics.",
+    "analogy": "An orchestra conductor coordinates specialists. The conductor does not become the violin or copy the violinist's technique into a giant method.",
+    "code": "<?php\ndeclare(strict_types=1);\nfinal class TaxCalculator\n{\n    public function tax(int $subtotal): int { return (int) round($subtotal * 0.10); }\n}\nfinal class SimulatedProcessor\n{\n    public function charge(int $total): string { return 'Simulated charge: ' . $total; }\n}\nfinal class OrderService\n{\n    public function __construct(private TaxCalculator $tax, private SimulatedProcessor $processor) {}\n    public function place(int $subtotal): string\n    {\n        if ($subtotal <= 0) throw new InvalidArgumentException('Positive subtotal required.');\n        return $this->processor->charge($subtotal + $this->tax->tax($subtotal));\n    }\n}\necho (new OrderService(new TaxCalculator, new SimulatedProcessor))->place(1000);",
+    "output": "Simulated charge: 1100",
+    "steps": "1. Tax calculation is a pure operation.\n2. The processor is an explicitly simulated dependency.\n3. OrderService coordinates validation, tax, and delegation.\n4. It adds 100 tax cents to 1000 subtotal cents.\n5. Replacing tax rules does not require subclassing OrderService.",
+    "bad": "An OrderService extending TaxCalculator inherits an artificial is-a relationship. Performing a live charge while holding a long database lock can cause contention and ambiguous failure recovery.",
+    "laravel": "Laravel can auto-resolve these concrete collaborators. Introduce a PaymentProcessor contract when adding real providers or test doubles. Put local order and line-item writes in DB::transaction; dispatch notifications after commit.",
+    "exercise": "Inject a notification collaborator and call it only after a successful simulated charge. Decide how a notification failure should affect an already-paid order.",
+    "solution": "Use a separate Notifier contract and enqueue delivery after the local paid state commits. A failed notification should be retried without charging the order again. Test that a failed processor prevents notification dispatch.",
+    "question": "Can a database rollback undo an external payment?",
+    "options": [
+      "No; external side effects need their own recovery design",
+      "Yes, if the charge is inside DB::transaction",
+      "Yes, if the service uses an interface",
+      "Only when using a singleton"
+    ],
+    "answer": 0,
+    "interview": "What makes coupling loose? A caller knows a small stable capability rather than provider internals. Composition alone does not guarantee low coupling if the caller still knows every implementation detail.",
+    "takeaway": "Coordinate meaningful collaborators and design side-effect failure boundaries explicitly.",
+    "tags": [
+      "oop",
+      "composition",
+      "services",
+      "transactions"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Static members and late static binding",
+    "definition": "A static member belongs to a class rather than a particular instance. Late static binding uses the called class for static:: resolution.",
+    "why": "self:: resolves against the class where a method is defined. static:: is resolved using the class through which the call is made. parent:: explicitly refers to a parent implementation. These rules matter when a base class defines a named constructor intended to return descendants.\n\nA static utility can be appropriate for a pure operation with no variable collaborator. Static mutable state is different: it can leak between tests and persist in long-lived workers. Avoid storing the current user in a static property.\n\nLaravel facades look like static calls, but most delegate to container-resolved objects and provide testing support. That does not make every static dependency automatically substitutable. Constructor injection often makes a service's actual needs easier to see.",
+    "analogy": "self is a return address printed on the original blueprint. static follows the name on the current caller's blueprint.",
+    "code": "<?php\ndeclare(strict_types=1);\nclass Report\n{\n    public static function fixed(): self { return new self; }\n    public static function make(): static { return new static; }\n}\nclass SalesReport extends Report {}\necho get_class(SalesReport::fixed()) . \"\\n\";\necho get_class(SalesReport::make());",
+    "output": "Report\nSalesReport",
+    "steps": "1. SalesReport inherits both static factory methods.\n2. fixed uses new self, whose defining scope is Report.\n3. make uses new static, preserving the called class.\n4. The static return type communicates that subtype promise.\n5. Factories here are stateless and have no external effects.",
+    "bad": "A public static $currentTenant reused by a queue worker can expose one tenant's state to the next job. Clearing it in one code path is not a robust lifecycle policy.",
+    "laravel": "Use scoped container bindings for request/job-scoped collaborators when appropriate. A pure value object's named constructor is a reasonable static method. Use facade fakes for supported framework services, and ordinary fakes for your own injected contracts.",
+    "exercise": "Add a protected static function label and override it in SalesReport. Compare self::label and static::label from an inherited public method.",
+    "solution": "The self call uses the base label; static uses the descendant's override. Add assertions for both outcomes and avoid modifying static state across tests.",
+    "question": "What does new static preserve in an inherited factory?",
+    "options": [
+      "The class used to make the call",
+      "Always the base class",
+      "The last instantiated object",
+      "A singleton instance"
+    ],
+    "answer": 0,
+    "interview": "Are Laravel facades ordinary static implementations? Usually no. Their static-looking API proxies to a container binding, which is why many support mocking and faking.",
+    "takeaway": "Use static operations deliberately and keep request-specific mutable state out of class globals.",
+    "tags": [
+      "oop",
+      "static",
+      "late static binding",
+      "facades"
+    ]
+  },
+  {
+    "module": 1,
+    "title": "Value objects, immutability, and entity identity",
+    "definition": "A value object is defined by its values and normally behaves immutably. An entity is defined by a continuing identity even as its attributes change.",
+    "why": "Two Money values with the same amount and currency represent the same value. Two users with equal names remain different entities if they have different IDs. Explicit equality methods communicate domain meaning; PHP == compares object properties while === checks whether two references identify the same object.\n\nReadonly classes are useful for values in PHP 8.2, but cannot guarantee deep immutability of nested mutable objects. Return new values from arithmetic instead of modifying the original. Avoid floats for a simple cents model; real money systems also require currency-specific scales, overflow policies, and rounding decisions.\n\nAn aggregate is a consistency boundary: an Order may own its line items and enforce total rules. It is not merely every object reachable from an ORM relationship. Keep aggregates small enough that transactional changes remain practical.",
+    "analogy": "A banknote's amount is a value; your bank account has an identity that continues even when its balance changes.",
+    "code": "<?php\ndeclare(strict_types=1);\nfinal readonly class Money\n{\n    public function __construct(public int $cents, public string $currency) {}\n    public function add(self $other): self\n    {\n        if ($this->currency !== $other->currency) throw new DomainException('Currency mismatch.');\n        return new self($this->cents + $other->cents, $this->currency);\n    }\n    public function equals(self $other): bool\n    {\n        return $this->cents === $other->cents && $this->currency === $other->currency;\n    }\n}\n$price = new Money(1000, 'USD');\n$total = $price->add(new Money(250, 'USD'));\necho $price->cents . ' -> ' . $total->cents;",
+    "output": "1000 -> 1250",
+    "steps": "1. readonly prevents reassignment after construction.\n2. add rejects incompatible currencies.\n3. It returns a new instance with the summed amount.\n4. The original price remains 1000 cents.\n5. equals compares domain values rather than reference identity.",
+    "bad": "Adding USD and EUR because both are integers loses currency meaning. Using === to compare separately constructed values checks identity rather than value equality.",
+    "laravel": "Map a Money object with an Eloquent custom cast or construct it in a domain service. Keep database columns for amount and currency explicit. A DTO transports data; it does not automatically establish domain invariants.",
+    "exercise": "Add subtract and equals tests. Verify equal separately constructed values return equals=true but ===false. Reject a currency mismatch.",
+    "solution": "subtract returns new self with the difference after the same currency guard. Test that both original operands are unchanged. Define whether negative values are permitted before adding an arbitrary nonnegative constraint.",
+    "question": "What primarily distinguishes an entity from a value object?",
+    "options": [
+      "Continuing identity",
+      "Having any properties",
+      "Using a constructor",
+      "Being stored in an array"
+    ],
+    "answer": 0,
+    "interview": "Does readonly imply deep immutability? No. A readonly property holding a mutable object cannot be reassigned, but that nested object's internal state may still change.",
+    "takeaway": "Model units, equality, identity, and invariants explicitly. Prefer new values over hidden mutation.",
+    "tags": [
+      "oop",
+      "value objects",
+      "immutability",
+      "entities"
+    ]
+  }
+]

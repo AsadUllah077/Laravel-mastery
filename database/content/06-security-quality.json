@@ -1,0 +1,190 @@
+[
+  {
+    "module": 6,
+    "title": "SQL injection, mass assignment, and input boundaries",
+    "definition": "SQL injection occurs when untrusted input becomes SQL syntax. Mass assignment becomes unsafe when input can set fields the caller is not authorized to control.",
+    "why": "Bound parameters keep a value separate from query syntax. Eloquent where('email', $email) and query builder bindings handle values safely; they do not authorize access, validate business rules, or make user-supplied column names safe. Sort columns and directions need an explicit allowlist.\n\nMass assignment is a different boundary. A request containing is_admin=true must not be able to promote a registered learner. Validate only intended fields, use validated data, and keep privilege fields out of fillable. Server-owned IDs and status fields should come from trusted context and use-case rules.\n\nLIKE parameters can be injection-safe but still treat % and _ as wildcards. Escape them when the product promises literal search. Avoid logging raw inputs containing passwords or tokens while diagnosing errors.",
+    "analogy": "Bindings send a sealed value envelope to the database. Allowlisted fields decide which entries the clerk is permitted to copy into the record.",
+    "code": "// Deliberately unsafe educational example — do not run:\n// DB::select(\"SELECT * FROM users WHERE email = '\".$request->email.\"'\");\n\n// Safe value binding:\n$user = User::where('email', $request->validated('email'))->first();\n\n// Allowlisted sorting:\n$columns = ['title', 'created_at'];\n$column = in_array($requestedSort, $columns, true) ? $requestedSort : 'title';\n$lessons = Lesson::orderBy($column)->paginate(12);",
+    "output": "The database treats the email as data, and sorting uses only supported columns. Permission to view or modify records must still be checked separately.",
+    "steps": "1. The commented unsafe example concatenates input into syntax.\n2. The safe where call binds the email value.\n3. A column identifier is selected from a fixed allowlist.\n4. Pagination bounds data returned per request.\n5. The query should additionally be scoped to the authorized user or tenant where applicable.",
+    "runnable": false,
+    "bad": "Passing user text as a raw SQL fragment or orderByRaw expression defeats value binding. Making is_admin fillable and accepting request->all() allows privilege changes even without SQL injection.",
+    "laravel": "This app's registration constructs only name, email, and password. User::fillable excludes is_admin. Search uses bound values and a fixed literal wildcard escape. SaveLessonRequest and the admin gate protect content writes independently of query binding.",
+    "exercise": "Add a regression test submitting is_admin=true during registration. Test a search containing percent and quote characters and verify no additional rows or SQL errors appear.",
+    "solution": "Assert the created account's is_admin is false. Seed a controlled lesson set; a literal % search should not return every lesson. The existing LearningAppTest contains these boundary tests and a regular-user admin-denial test.",
+    "question": "Can binding a value safely authorize access to the matching record?",
+    "options": [
+      "No; authorization is a separate decision",
+      "Yes, for every Eloquent query",
+      "Yes, if the field is numeric",
+      "Only if the query returns one row"
+    ],
+    "answer": 0,
+    "interview": "Can you bind a column name like a value? A value placeholder is not a portable identifier substitution. Use an allowlist for user-selectable columns and directions.",
+    "takeaway": "Keep SQL syntax, allowed fields, business validation, and authorization as separate explicit boundaries.",
+    "tags": [
+      "security",
+      "sql injection",
+      "mass assignment",
+      "validation"
+    ]
+  },
+  {
+    "module": 6,
+    "title": "XSS, CSRF, and safe content rendering",
+    "definition": "XSS makes a browser interpret untrusted text as executable markup or script. CSRF abuses ambient browser credentials to submit an unwanted state-changing request.",
+    "why": "Vue interpolation and Blade's escaped {{ }} syntax display untrusted text safely in normal text contexts. v-html and Blade's raw output bypass that protection. Escaping rules depend on context; HTML text escaping is not a universal JavaScript, URL, or CSS sanitizer.\n\nThis learning app stores code as text. Syntax highlighting uses a library that escapes source before producing its own markup. Arbitrary lesson HTML is not rendered. If rich HTML becomes a requirement, add a maintained allowlist sanitizer and regression tests, not a regular expression that removes a few tags.\n\nLaravel's web middleware validates CSRF tokens on browser state-changing requests. Authentication, SameSite cookie policy, and CSRF protection have different roles. GET endpoints must not perform destructive actions. A CSRF token does not authorize an admin operation and does not solve XSS.",
+    "analogy": "Escaping displays instructions as a photograph rather than carrying them out. A CSRF token is a form seal proving the submission came through the session's expected form flow.",
+    "code": "<!-- Vue text interpolation escapes lesson text -->\n<p>{{ lesson.summary }}</p>\n<pre><code>{{ example.source_code }}</code></pre>\n\n<!-- Blade form example -->\n<form method=\"POST\" action=\"/profile\">\n    @csrf\n    @method('PATCH')\n    <input name=\"name\" value=\"{{ old('name', $user->name) }}\">\n</form>\n\n<!-- Avoid rendering untrusted content with v-html. -->",
+    "language": "blade",
+    "output": "Source code and user text display as text. A valid Laravel web form includes the session's CSRF token and the intended update method.",
+    "steps": "1. Interpolation uses the framework's contextual text escaping.\n2. A code block does not itself make raw HTML safe; text escaping does.\n3. @csrf emits a hidden token in Blade.\n4. @method supports the intended HTTP update method through a POST form.\n5. Inertia/Axios use Laravel's same-origin session/XSRF cookie flow.",
+    "runnable": false,
+    "bad": "v-html='lesson.summary' converts stored content into an HTML execution context. Disabling CSRF for every route to fix a frontend configuration problem removes the intended session-request boundary.",
+    "laravel": "Lesson sections, exercises, titles, and output render through Vue interpolation. Only highlight.js output is injected as library-generated markup. Keep dependencies reviewed and prohibit execution of edited PHP in the application process.",
+    "exercise": "Add lesson text containing harmless angle-bracket markup and inspect that it appears literally. Verify an ordinary browser POST without the expected CSRF token is rejected, and an authenticated valid form succeeds.",
+    "solution": "Render the text through interpolation and assert it remains text rather than a created element in a browser test. For CSRF, use a real HTTP smoke test because Laravel's feature-test environment normally bypasses CSRF validation. Do not claim a feature test alone proves it.",
+    "question": "Which Vue feature requires special care for untrusted lesson content?",
+    "options": [
+      "v-html",
+      "Normal {{ text }} interpolation",
+      "v-for over escaped labels",
+      "A button click handler defined in source"
+    ],
+    "answer": 0,
+    "interview": "Does CSRF protection prevent XSS? No. XSS executes within the trusted origin and can often access the session's form flow. Prevent both with their appropriate controls.",
+    "takeaway": "Escape by rendering context, keep code as data, and retain CSRF protection for session-based mutations.",
+    "tags": [
+      "security",
+      "xss",
+      "csrf",
+      "blade"
+    ]
+  },
+  {
+    "module": 6,
+    "title": "Authorization, IDOR, and private resource access",
+    "definition": "Authorization decides whether an identified user may perform an action on a resource. IDOR occurs when changing a resource identifier bypasses the intended access boundary.",
+    "why": "A slug or UUID is an identifier, not permission. A user who can guess or obtain another identifier must still fail authorization. Scope queries to the current user or tenant and enforce policies for actions; both layers can help express the boundary clearly.\n\nUse gates for broad capabilities such as managing educational content and policies for resource operations such as editing a lesson. Route middleware protects groups, while policies express action/resource rules. Ownership fields must come from trusted session context rather than hidden form inputs.\n\nPrivate downloads must be authorized before streaming or generating an expiring URL. Public storage is unsuitable for confidential reports. Validate uploaded file types, sizes, and generated filenames; do not join user-supplied paths into storage locations. SSRF and webhook endpoints need explicit destination/signature validation when introduced.",
+    "analogy": "Knowing a room number is not a hotel key. The front desk checks which guest owns access even if the room number is public.",
+    "code": "// Protected route group:\nRoute::middleware(['auth', 'verified', 'can:manage-content'])\n    ->prefix('admin')->group(function () {\n        Route::put('/lessons/{lesson}', [ContentController::class, 'update']);\n    });\n\n// Controller resource authorization:\nGate::authorize('update', $lesson);\n\n// User-owned activity:\n$request->user()->bookmarks()->firstOrCreate(['lesson_id' => $lesson->id]);",
+    "output": "Regular learners receive 403 for content administration. Bookmark ownership is derived from the authenticated user, regardless of any submitted user_id.",
+    "steps": "1. auth establishes identity.\n2. verified checks email status.\n3. The gate limits the whole admin route group.\n4. A policy checks the resource operation.\n5. The relationship supplies the owner ID for user activity.",
+    "runnable": false,
+    "bad": "Checking is_admin only in Vue leaves the backend writable. Trusting request->user_id for a progress update allows another user's record to be targeted. Storing private reports on a public disk bypasses download authorization.",
+    "laravel": "This app defines manage-content in AppServiceProvider and uses LessonPolicy. Preview is admin-only for drafts; learners' dashboard/search/activity queries consistently exclude unpublished modules. Administrator promotion is only available through a server-side command.",
+    "exercise": "Test every content mutation as a regular learner. Submit a foreign user_id with a bookmark or progress update and prove only the current user's record changes.",
+    "solution": "AssertForbidden for admin create/update/reorder routes. AssertDatabaseHas for the authenticated user ID and assertDatabaseMissing for the foreign ID. Add tests whenever new nested content endpoints are introduced.",
+    "question": "Why is using a UUID insufficient to prevent IDOR?",
+    "options": [
+      "An identifier does not establish permission",
+      "UUIDs cannot be stored in databases",
+      "Policies only support integer IDs",
+      "UUIDs automatically disable CSRF"
+    ],
+    "answer": 0,
+    "interview": "Authentication versus authorization? Authentication identifies the caller; authorization decides whether that caller may perform this specific action on this resource.",
+    "takeaway": "Enforce resource access on the server, derive ownership from trusted context, and test denied paths.",
+    "tags": [
+      "security",
+      "authorization",
+      "policies",
+      "idor"
+    ]
+  },
+  {
+    "module": 7,
+    "title": "Testing behavior with fakes and database boundaries",
+    "definition": "A useful automated test checks an observable rule or outcome and fails when that behavior breaks. Different test boundaries answer different questions.",
+    "why": "A unit test can check a pure calculator without booting Laravel. A feature test can exercise routing, middleware, validation, authorization, persistence, and response behavior together. Adapter integration tests establish whether real SQL or a provider boundary works as expected.\n\nUse fakes to replace external mail, notifications, storage, events, queues, and payment contracts. A mock interaction assertion can be useful for a meaningful side effect, but tests that repeat private implementation details make refactoring unnecessarily expensive. Assert business outcomes and security boundaries.\n\nRefreshDatabase creates an isolated schema and transaction strategy for tests. Never point a destructive test workflow at the development or production schema. This repository forces in-memory SQLite for default tests; MySQL-specific locking and SQL behavior require separate verification. Static analysis catches type inconsistencies; Pint checks formatting. Neither proves correct authorization or business behavior.",
+    "analogy": "A fire drill checks evacuation behavior rather than the exact footsteps of every participant. A unit test checks one alarm, while an integration test checks that the connected building system works.",
+    "code": "// Laravel feature test excerpt\npublic function test_a_learner_cannot_edit_content(): void\n{\n    $learner = User::factory()->create();\n    $lesson = Lesson::factory()->create();\n    $this->actingAs($learner)\n        ->put(route('admin.lessons.update', $lesson), ['title' => 'Changed'])\n        ->assertForbidden();\n    $this->assertNotSame('Changed', $lesson->fresh()->title);\n}",
+    "output": "The test passes only when the endpoint rejects the learner and persisted content remains unchanged. It runs against an isolated test database.",
+    "steps": "1. Factories create independent test fixtures.\n2. actingAs establishes the caller without a manual login flow.\n3. The HTTP request reaches the authorization boundary.\n4. The response and stored state are both asserted.\n5. Separate Breeze tests cover actual credential login and password reset behavior.",
+    "runnable": false,
+    "bad": "Mocking the controller method under test avoids the behavior you intended to verify. An assertion that a service is an object proves little. Claiming code coverage proves security confuses execution with correct assertions.",
+    "laravel": "Use Notification::fake for mail dispatch, Queue::fake for enqueue intent, and Storage::fake for upload behavior. For job logic tests invoke the job with an injected fake dependency rather than only asserting it was queued.",
+    "exercise": "Write a PaymentGateway fake that records amounts and a CheckoutService test that rejects negative totals before any charge. Then write an integration test for the storage adapter separately.",
+    "solution": "Keep a public charges array on the fake. Assert it remains empty after a rejected checkout and contains one exact amount after success. Do not use live payment credentials. Run php artisan test, Pint, and Larastan as complementary checks.",
+    "question": "Which test best protects an authorization boundary?",
+    "options": [
+      "A denied HTTP request plus an assertion that state did not change",
+      "Asserting the controller class exists",
+      "Mocking the entire route handler",
+      "Only checking the button is hidden"
+    ],
+    "answer": 0,
+    "interview": "What does a queue fake prove? It proves dispatch intent under the test. It does not prove a worker executes the job correctly or that an external provider delivers it.",
+    "takeaway": "Test meaningful behavior at the right boundary and state clearly which infrastructure the test replaces.",
+    "tags": [
+      "testing",
+      "phpunit",
+      "fakes",
+      "quality"
+    ]
+  },
+  {
+    "module": 8,
+    "title": "Measure first: queries, memory, and pagination",
+    "definition": "Performance work improves a measured bottleneck under representative load. Scalability is the ability to meet requirements as workload grows.",
+    "why": "Begin with a reproducible scenario, data volume, environment, and baseline. Measure response time distribution, query count, query time, memory, and throughput as relevant. A single fastest request is not representative. Do not invent benchmark numbers for an optimization you have not measured.\n\nUse eager loading to prevent repeated relationship queries, SQL aggregates to reduce transferred rows, and appropriate indexes verified with EXPLAIN. Offset pagination is simple; cursor pagination can suit large ordered feeds with a stable unique ordering. chunkById helps process changing datasets without offset skips.\n\nQueues move work but do not remove its cost. Caching trades freshness and invalidation complexity for reuse. Redis, Octane, replicas, and horizontal scaling add operational concerns; persistent workers demand careful state lifecycles. Fix the bottleneck supported by evidence before adding infrastructure.",
+    "analogy": "A mechanic measures which component limits the car before replacing random parts. More engines do not fix a blocked fuel line.",
+    "code": "// Development-only instrumentation; do not log bindings with secrets.\nDB::enableQueryLog();\n$started = hrtime(true);\n$lessons = Lesson::with('module')->limit(50)->get();\n$elapsedMs = (hrtime(true) - $started) / 1_000_000;\n$queryCount = count(DB::getQueryLog());\nDB::disableQueryLog();\nDB::flushQueryLog();\n// Record queryCount, elapsedMs, dataset size, and environment.",
+    "output": "Environment-specific measurements. No fixed benchmark result is claimed. Compare repeated runs with the same dataset and report distributions.",
+    "steps": "1. Bound the dataset and start a monotonic timer.\n2. Execute the query with a declared loading strategy.\n3. Count queries and compute elapsed milliseconds.\n4. Stop and clear logging to avoid accumulating memory.\n5. Repeat after a single change and compare like-for-like conditions.",
+    "runnable": false,
+    "bad": "Enabling an unbounded query log during a production bulk job can exhaust memory and leak bindings. Replacing every query with a cache without a freshness policy risks serving wrong data faster.",
+    "laravel": "The library uses pagination, eager loading, withExists, and a query-growth regression test. Search currently uses LIKE across lesson text/code; a large course may justify a measured full-text index or search engine. Do not add it solely because it sounds scalable.",
+    "exercise": "Compare one and twelve library rows and confirm query count stays bounded. Benchmark a representative keyword search before proposing indexing changes. Record p50/p95 timing over repeated controlled runs.",
+    "solution": "Use the existing query-count regression test for a structural guard, then a separate local benchmark for timing. Inspect EXPLAIN on MySQL with realistic data, add a candidate index only when it matches the query shape, and measure write/storage costs too.",
+    "question": "What should come before adding a new performance infrastructure dependency?",
+    "options": [
+      "A reproducible measurement of the bottleneck",
+      "An invented target benchmark",
+      "A rewrite of every model",
+      "Disabling all validation"
+    ],
+    "answer": 0,
+    "interview": "Does chunkById guarantee a frozen dataset? No. It avoids offset-shift problems using an ID boundary, but concurrent changes and the business consistency requirement still need consideration.",
+    "takeaway": "Bound work, profile representative scenarios, and make performance claims reproducible.",
+    "tags": [
+      "performance",
+      "n+1",
+      "profiling",
+      "pagination"
+    ]
+  },
+  {
+    "module": 9,
+    "title": "Reproducible releases and a deployment checklist",
+    "definition": "A deployment is a controlled change of application code, dependencies, assets, configuration, and compatible schema with a tested recovery path.",
+    "why": "Build from committed dependency locks. Install production PHP dependencies with optimized autoloading and build frontend assets in CI or a controlled build environment. Keep .env and APP_KEY outside source control. Rotating APP_KEY without a migration plan can invalidate sessions and encrypted data.\n\nServe only the public directory through Nginx/PHP-FPM or a supported equivalent. Disable debug output, require HTTPS, set secure cookies, and restrict writable directories to storage and bootstrap/cache. Use a dedicated least-privilege database account rather than local root.\n\nSchema changes must remain compatible with old and new application instances during rolling releases. Use expand/backfill/switch/contract for risky changes. Database migrations are not automatically reversible without data loss. Test backups by restoring them, keep health checks, supervise workers, and run a scheduler only when scheduled application work exists.",
+    "analogy": "A release is a rehearsed stage change: props, lights, and actors must stay compatible while the audience is still present.",
+    "code": "composer install --no-dev --prefer-dist --optimize-autoloader\nnpm ci\nnpm run build\nphp artisan migrate --force\nphp artisan config:cache\nphp artisan route:cache\nphp artisan view:cache\nphp artisan queue:restart\n# Verify /up, authenticated pages, logs, and queue processing.\n# Keep a tested code and database recovery procedure.",
+    "language": "bash",
+    "output": "A reproducible production build and cached application configuration, provided environment secrets, permissions, database access, and process supervision are correctly configured. These commands are a checklist, not a deployment performed by this lesson.",
+    "steps": "1. Install exact locked dependencies and compile assets.\n2. Apply reviewed backward-compatible migrations.\n3. Cache only after production configuration is available.\n4. Restart long-lived workers to load the new code.\n5. Verify health and user workflows before declaring success.",
+    "runnable": false,
+    "bad": "Committing .env leaks secrets. Running composer update on each server creates unreviewed versions. Pointing the web root at the repository can expose files. A backup that has never been restored is an unverified recovery assumption.",
+    "laravel": "See docs/DEPLOYMENT.md and deploy/nginx.conf.example. Laravel's /up health endpoint checks application boot, but you should add operational checks for database/cache/queue dependencies according to your availability needs.",
+    "exercise": "Write a staging release plan with a health check, a compatible migration, a queue restart, and rollback criteria. Perform a database restore into a separate disposable schema.",
+    "solution": "Use a release directory or immutable image and a reversible routing switch. Define an error-rate or health-failure trigger. Restore the backup without touching production, validate row counts and application reads, and document the actual duration.",
+    "question": "Why should production installation use composer.lock?",
+    "options": [
+      "To reproduce reviewed exact dependency versions",
+      "To download an arbitrary newest version every time",
+      "To store environment secrets",
+      "To replace database backups"
+    ],
+    "answer": 0,
+    "interview": "Is php artisan migrate:rollback a complete deployment rollback? No. It may be destructive or incompatible with newer writes; plan code and data recovery explicitly.",
+    "takeaway": "Make releases reproducible, schema changes compatible, secrets external, and recovery tested.",
+    "tags": [
+      "deployment",
+      "devops",
+      "ci",
+      "backups"
+    ]
+  }
+]
